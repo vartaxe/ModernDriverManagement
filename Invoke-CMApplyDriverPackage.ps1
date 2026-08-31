@@ -99,6 +99,9 @@
 	# Run in a debug mode for testing purposes (to be used locally on the computer model):
 	.\Invoke-CMApplyDriverPackage.ps1 -DebugMode -Endpoint 'CM01.domain.com' -UserName 'svc@domain.com' -Password 'svc-password' -TargetOSName 'Windows 10' -TargetOSVersion '1909'
 
+	# Detect, download and apply an explicitly virtual-machine driver package:
+	.\Invoke-CMApplyDriverPackage.ps1 -BareMetal -AllowVirtualMachine -Endpoint 'CM01.domain.com' -TargetOSName 'Windows 10' -TargetOSVersion '1909'
+
 	# Run in a debug mode for testing purposes and overriding the automatically detected computer details (could be executed basically anywhere):
 	.\Invoke-CMApplyDriverPackage.ps1 -DebugMode -Endpoint 'CM01.domain.com' -UserName 'svc@domain.com' -Password 'svc-password' -TargetOSName 'Windows 10' -TargetOSVersion '1909' -Manufacturer 'Dell' -ComputerModel 'Precision 5520' -SystemSKU '07BF'
 
@@ -220,6 +223,7 @@
 						 - Switched exact comparisons (OS name, architecture, OS version, computer model) from -like to -eq to avoid wildcard misinterpretation of values containing bracket characters
     4.2.8 - (2026-08-05) - Documented the Get-ComputerData default branch with a placeholder/template describing how to add support for custom/unlisted manufacturers (WMI/CIM property sources, the Manufacturer-match requirement in Confirm-DriverPackage, and the -Manufacturer debug ValidateSet).
 						 - Logging improvements for troubleshooting: Invoke-Executable launch failures are now written to the log file (Severity 3) instead of only Write-Warning, and return -1 rather than silently continuing; Get-ComputerData wraps manufacturer detection in try/catch that logs the manufacturer context on failure and degrades gracefully; the unlisted-manufacturer default branch now logs a warning; and a script version + key parameter banner is written at startup.
+	4.2.9 - (2026-08-31) - Added opt-in virtual-machine support with explicit virtual-package matching. DebugMode remains detection-only.
 #>
 [CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = "BareMetal")]
 param(
@@ -240,6 +244,14 @@ param(
 	
 	[parameter(Mandatory = $true, ParameterSetName = "Debug", HelpMessage = "Set the script to operate in 'DebugMode' deployment type mode.")]
 	[switch]$DebugMode,
+
+	[parameter(Mandatory = $false, ParameterSetName = "BareMetal", HelpMessage = "Allow execution on a detected virtual machine. Only explicitly virtual-machine driver packages are eligible.")]
+	[parameter(Mandatory = $false, ParameterSetName = "DriverUpdate")]
+	[parameter(Mandatory = $false, ParameterSetName = "OSUpgrade")]
+	[parameter(Mandatory = $false, ParameterSetName = "PreCache")]
+	[parameter(Mandatory = $false, ParameterSetName = "XMLPackage")]
+	[parameter(Mandatory = $false, ParameterSetName = "Debug")]
+	[switch]$AllowVirtualMachine,
 	
 	[parameter(Mandatory = $true, ParameterSetName = "BareMetal", HelpMessage = "Specify the internal fully qualified domain name of the server hosting the AdminService, e.g. CM01.domain.local.")]
 	[parameter(Mandatory = $true, ParameterSetName = "DriverUpdate")]
@@ -362,6 +374,9 @@ Begin {
 	
 	# Enable TLS 1.2 support for downloading modules from PSGallery
 	[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+	$Script:IsVirtualMachine = $false
+	$Script:VirtualMachineModels = @("Virtual Machine", "VMware Virtual Platform", "VirtualBox", "HVM domU", "KVM", "VMware7,1")
+	$Script:VirtualMachinePackagePattern = "\b(virtual machine|vmware|vmxnet|pvscsi|hyper[- ]?v|parallels|virtualbox|virtio|kvm|xen)\b"
 }
 Process {
 	# Set Log Path
@@ -1324,14 +1339,35 @@ Process {
 		return $ComputerDetails
 	}
 	
+	function Test-VirtualMachineDriverPackage {
+		param(
+			[parameter(Mandatory = $true)]
+			[PSObject]$Package
+		)
+
+		# Virtual machines must only consume packages explicitly labelled for virtual hardware.
+		$PackageIdentity = @(
+			$Package.Name
+			$Package.PackageName
+			$Package.Description
+			$Package.Manufacturer
+		) -join " "
+		return $PackageIdentity -match $Script:VirtualMachinePackagePattern
+	}
+
 	function Get-ComputerSystemType {
 		$ComputerSystemType = Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty "Model"
-		if ($ComputerSystemType -notin @("Virtual Machine", "VMware Virtual Platform", "VirtualBox", "HVM domU", "KVM", "VMWare7,1")) {
+		if ($ComputerSystemType -notin $Script:VirtualMachineModels) {
+			$Script:IsVirtualMachine = $false
 			Write-CMLogEntry -Value " - Supported computer platform detected, script execution allowed to continue" -Severity 1
 		}
 		else {
-			if ($Script:PSCmdlet.ParameterSetName -like "Debug") {
-				Write-CMLogEntry -Value " - Unsupported computer platform detected, virtual machines are not supported but will be allowed in DebugMode" -Severity 2
+			$Script:IsVirtualMachine = $true
+			if ($AllowVirtualMachine) {
+				Write-CMLogEntry -Value " - Virtual machine platform detected: '$($ComputerSystemType)'. Execution explicitly allowed by -AllowVirtualMachine; only virtual-machine driver packages will be eligible" -Severity 2
+			}
+			elseif ($Script:PSCmdlet.ParameterSetName -like "Debug") {
+				Write-CMLogEntry -Value " - Virtual machine platform detected: '$($ComputerSystemType)'. DebugMode permits detection only; package download and installation remain disabled" -Severity 2
 			}
 			else {
 				Write-CMLogEntry -Value " - Unsupported computer platform detected, virtual machines are not supported" -Severity 3
@@ -1428,6 +1464,12 @@ Process {
 		Write-CMLogEntry -Value " - Filtering driver package results to detected computer manufacturer: $($ComputerData.Manufacturer)" -Severity 1
 		$DriverPackages = $DriverPackages | Where-Object {
 			$_.Manufacturer -like $ComputerData.Manufacturer
+		}
+		if ($Script:IsVirtualMachine -and $AllowVirtualMachine) {
+			Write-CMLogEntry -Value " - Filtering virtual-machine results to packages explicitly labelled for virtual hardware" -Severity 1
+			$DriverPackages = $DriverPackages | Where-Object {
+				Test-VirtualMachineDriverPackage -Package $_
+			}
 		}
 		$DriverPackagesCount = ($DriverPackages | Measure-Object).Count
 		Write-CMLogEntry -Value " - Count of driver packages after filter processing: $($DriverPackagesCount)" -Severity 1
@@ -1612,6 +1654,12 @@ Process {
 					Write-CMLogEntry -Value " - Filtering fallback driver package results to detected computer manufacturer: $($ComputerData.Manufacturer)" -Severity 1
 					$FallbackDriverPackages = $FallbackDriverPackages | Where-Object {
 						$_.Manufacturer -like $ComputerData.Manufacturer
+					}
+					if ($Script:IsVirtualMachine -and $AllowVirtualMachine) {
+						Write-CMLogEntry -Value " - Filtering virtual-machine fallback results to packages explicitly labelled for virtual hardware" -Severity 1
+						$FallbackDriverPackages = $FallbackDriverPackages | Where-Object {
+							Test-VirtualMachineDriverPackage -Package $_
+						}
 					}
 					
 					foreach ($DriverPackageItem in $FallbackDriverPackages) {
