@@ -375,7 +375,7 @@ Begin {
 	# Enable TLS 1.2 support for downloading modules from PSGallery
 	[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 	$Script:IsVirtualMachine = $false
-	$Script:VirtualMachineModels = @("Virtual Machine", "VMware Virtual Platform", "VirtualBox", "HVM domU", "KVM", "VMWare7,1")
+	$Script:VirtualMachineModels = @("Virtual Machine", "VMware Virtual Platform", "VirtualBox", "HVM domU", "KVM", "VMware7,1")
 	$Script:VirtualMachinePackagePattern = "\b(virtual machine|vmware|vmxnet|pvscsi|hyper[- ]?v|parallels|virtualbox|virtio|kvm|xen)\b"
 }
 Process {
