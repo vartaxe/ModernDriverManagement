@@ -375,6 +375,8 @@ Begin {
 	# Enable TLS 1.2 support for downloading modules from PSGallery
 	[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 	$Script:IsVirtualMachine = $false
+	$Script:VirtualMachineModels = @("Virtual Machine", "VMware Virtual Platform", "VirtualBox", "HVM domU", "KVM", "VMWare7,1")
+	$Script:VirtualMachinePackagePattern = "\b(virtual machine|vmware|vmxnet|pvscsi|hyper[- ]?v|parallels|virtualbox|virtio|kvm|xen)\b"
 }
 Process {
 	# Set Log Path
@@ -1350,12 +1352,12 @@ Process {
 			$Package.Description
 			$Package.Manufacturer
 		) -join " "
-		return $PackageIdentity -match "\b(virtual machine|vmware|vmxnet|pvscsi|hyper[- ]?v|parallels|virtualbox|virtio|kvm|xen)\b"
+		return $PackageIdentity -match $Script:VirtualMachinePackagePattern
 	}
 
 	function Get-ComputerSystemType {
 		$ComputerSystemType = Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty "Model"
-		if ($ComputerSystemType -notin @("Virtual Machine", "VMware Virtual Platform", "VirtualBox", "HVM domU", "KVM", "VMWare7,1")) {
+		if ($ComputerSystemType -notin $Script:VirtualMachineModels) {
 			$Script:IsVirtualMachine = $false
 			Write-CMLogEntry -Value " - Supported computer platform detected, script execution allowed to continue" -Severity 1
 		}
