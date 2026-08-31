@@ -374,6 +374,7 @@ Begin {
 	
 	# Enable TLS 1.2 support for downloading modules from PSGallery
 	[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+	$Script:IsVirtualMachine = $false
 }
 Process {
 	# Set Log Path
@@ -1349,7 +1350,7 @@ Process {
 			$Package.Description
 			$Package.Manufacturer
 		) -join " "
-		return $PackageIdentity -match "(?i)virtual|vmware|vmxnet|pvscsi|hyper[- ]?v|parallels|virtualbox|virtio|kvm|xen"
+		return $PackageIdentity -match "\b(virtual machine|vmware|vmxnet|pvscsi|hyper[- ]?v|parallels|virtualbox|virtio|kvm|xen)\b"
 	}
 
 	function Get-ComputerSystemType {
