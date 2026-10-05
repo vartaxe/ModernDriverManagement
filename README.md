@@ -2,6 +2,24 @@
 
 For implementation instructions, please go to https://www.msendpointmgr.com/modern-driver-management
 
+## Windows ADK and WinPE compatibility
+
+Recognizing a Windows release in this script does not certify every Configuration
+Manager, Windows ADK, or WinPE combination for that release. For Windows 11 26H2,
+Microsoft's current ADK documentation lists the serviced `10.1.26100.9457` kit,
+and Configuration Manager supports the `10.1.26100.x` ADK family. Microsoft lists
+ADK `10.1.28000.1` specifically for Windows 11 26H1 Arm64, but currently marks it
+unsupported with Configuration Manager 2509, 2603, and 2609. Check the current
+[Windows ADK download guidance](https://learn.microsoft.com/windows-hardware/get-started/adk-install)
+and
+[Configuration Manager ADK support matrix](https://learn.microsoft.com/intune/configmgr/core/plan-design/configs/support-for-windows-adk)
+before updating a boot image.
+
+The WinPE boot image must include the optional components required by this script,
+including WinPE-WMI and WinPE-PowerShell with their dependencies. Configuration
+Manager 2403 or later and ADK `10.1.26100.x` or later are required for supported
+Arm64 operating-system deployment. Modern ADKs do not include an x86 WinPE image.
+
 ## Virtual machines
 
 `Invoke-CMApplyDriverPackage.ps1` blocks detected virtual machines by default. Use
@@ -11,13 +29,13 @@ VMware platform detection uses the case-insensitive `VMware*` wildcard, recogniz
 model strings without requiring a new entry for each model.
 These identifiers are not treated as VMware virtual hardware version numbers.
 Hyper-V detection requires the exact model `Virtual Machine` together with a
-manufacturer containing `Microsoft`. This covers both Generation 1 and Generation 2;
-these fields do not distinguish their firmware or generation. The generic model
-alone is not treated as Hyper-V.
+manufacturer containing `Microsoft`. These fields do not infer VM firmware or
+generation. The generic model alone is not treated as Hyper-V.
 
 VirtualBox is recognized by the exact model `VirtualBox`, including guests reporting
 `innotek GmbH` or `Oracle Corporation` as manufacturer. QEMU/KVM detection recognizes
-models containing `Standard PC` or `KVM`, or a manufacturer containing `QEMU`.
+models containing `KVM`, or a manufacturer containing `QEMU`. A `Standard PC` model
+also requires a manufacturer containing `QEMU` or `Red Hat`.
 A Red Hat manufacturer is accepted when the model also contains `Virtual Machine`,
 rather than treating every Red Hat system as a VM. Xen/Citrix detection recognizes
 `HVM domU` and models or manufacturers containing `Xen` or `Citrix` before the
@@ -25,6 +43,12 @@ QEMU/KVM and physical OEM checks. The `Hypervisor-XenCitrix` label identifies th
 family, not a specific host product. Virtual package labels include `Citrix`,
 `Xen`, `XenServer`, and `XenEnterprise`.
 The platform, manufacturer, and model are logged.
+
+Platform detection is a best-effort SMBIOS heuristic. Hypervisors can override the
+manufacturer and product strings exposed to the guest, and vendor documentation does
+not define these values as a stable cross-version detection API. Customized values
+can therefore produce `Physical-Unknown`; use the log and `-DebugMode` to validate
+new environments before deployment.
 
 QEMU/KVM identification does not distinguish Proxmox from other QEMU/KVM hosts or
 infer firmware/chipset from a model string. The script deploys matching INF driver
@@ -71,5 +95,6 @@ also stages content for Windows Setup. Missing XML package files stop execution.
 SystemSKU lists support comma, semicolon, and whitespace separators and match
 complete tokens, not substrings or regular expressions. Arm64 is recognized in
 fallback packages as well as regular packages. DriverUpdate logs PnPUtil output
-to `Install-Drivers.txt`, accepts success/restart-required exit codes (0/3010),
-and stops on other failures instead of reporting success.
+to `Install-Drivers.txt`, accepts 0 and the standard Windows reboot-required code
+3010, and stops on other failures instead of reporting success. Microsoft documents
+the PnPUtil command syntax but does not publish a PnPUtil-specific exit-code table.

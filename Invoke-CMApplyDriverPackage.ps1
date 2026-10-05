@@ -228,7 +228,7 @@
 	4.3.0 - (2026-09-03) - Added support for Windows 11 26H1 (Arm64 devices):
 						 - TargetOSVersion now accepts '26H1', so BareMetal/OSUpgrade/PreCache/XMLPackage runs can target driver packages built for the release.
 						 - Get-OSBuild translates OS build 28000 to '26H1' (per the Microsoft Windows 11 release information page; 26H1 reached general availability on 2026-02-10 and ships on new devices only -- it is not offered as an in-place update from 24H2 or 25H2).
-						 - Get-OSBuild also no longer fails outright on a Windows 11 build number it has no entry for. It now falls back to the DisplayVersion value under HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion, which is the authoritative feature update token on every build from 20H2 onwards, so DriverUpdate mode keeps resolving future releases without waiting for a script update per build number. An unreadable or non-conforming DisplayVersion still raises the original unsupported-OS terminating error.
+						 - Get-OSBuild also no longer fails outright on a Windows 11 build number it has no entry for. It now attempts to use the DisplayVersion value under HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion, after validating the expected NNHN format, so DriverUpdate mode can resolve a future release without waiting for a script update per build number. An unreadable or non-conforming DisplayVersion still raises the original unsupported-OS terminating error.
 						 - No change was needed for package matching: the OSVersion parser already recognises the NNHN token, the Arm64 architecture token was added in 4.2.7, and the OSVersionFallback comparison already orders 26H1 (2605) above 25H2 (2510).
 	4.3.1 - (2026-09-03) - Added AdminService authentication resiliency for the ConfigMgr 2603 security changes:
 						 - ConfigMgr 2603 rejects AdminService authentication that uses a bare service account user name (e.g. 'svc-osd'), a configuration that worked on earlier builds, so existing task sequences began failing with 401 Unauthorized. Get-AuthCredential now warns when the configured user name is not in UPN format and recommends updating it, naming the alternative formats that will be attempted.
@@ -246,6 +246,9 @@
 						 - Physical OEM classification runs only after hypervisor checks; unknown brands retain normal package validation without an automatic driver fallback.
 						 - Xen/Citrix detection checks model and manufacturer for Xen or Citrix, retains HVM domU, and recognizes XenServer/Citrix package labels.
 						 - Fixed Arm64 fallback package parsing, exact SKU token matching, XML OSUpdate/OSUpgrade staging, missing XML file termination, and DriverUpdate exit-code handling.
+	4.3.4 - (2026-10-05) - Hardened release and platform compatibility guidance after an authoritative-source audit:
+						 - Standard PC identifies QEMU/KVM only when the manufacturer also indicates QEMU or Red Hat, avoiding a model-only virtual-machine classification.
+						 - Clarified that DisplayVersion is a validated fallback rather than a guaranteed release contract.
 #>
 [CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = "BareMetal")]
 param(
@@ -1345,12 +1348,10 @@ Process {
 					}
 					default {
 						# Build number not in the table above. New Windows 11 releases keep arriving, so
-						# rather than failing on every build this script version predates, read the
-						# authoritative feature update token from the DisplayVersion value under
-						# CurrentVersion. It is present on every build from 20H2 onwards and always
-						# reflects the enablement package that is actually installed, which is exactly
-						# what driver package names are stamped with (e.g. 'Drivers - Dell Latitude
-						# 7455 - Windows 11 26H1 Arm64').
+						# rather than failing on every build this script version predates, try the
+						# CurrentVersion DisplayVersion value used by supported Windows releases.
+						# Validate its format before using it as the package version token (for example,
+						# 'Drivers - Dell Latitude 7455 - Windows 11 26H1 Arm64').
 						$DisplayVersion = $null
 						try {
 							$DisplayVersion = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -Name "DisplayVersion" -ErrorAction Stop).DisplayVersion
@@ -1724,7 +1725,9 @@ Process {
 			($ComputerSystemManufacturer -like "*Citrix*")) {
 			$Script:ComputerPlatform = "Hypervisor-XenCitrix"
 		}
-		elseif (($ComputerSystemType -like "*Standard PC*") -or ($ComputerSystemType -like "*KVM*") -or
+		elseif ((($ComputerSystemType -like "*Standard PC*") -and
+				(($ComputerSystemManufacturer -like "*QEMU*") -or ($ComputerSystemManufacturer -like "*Red Hat*"))) -or
+			($ComputerSystemType -like "*KVM*") -or
 			($ComputerSystemManufacturer -like "*QEMU*") -or
 			(($ComputerSystemManufacturer -like "*Red Hat*") -and ($ComputerSystemType -like "*Virtual Machine*"))) {
 			$Script:ComputerPlatform = "Hypervisor-QEMUKVM"
@@ -2664,7 +2667,7 @@ Process {
 	}
 	
 	Write-CMLogEntry -Value "[ApplyDriverPackage]: Apply Driver Package process initiated" -Severity 1
-	Write-CMLogEntry -Value " - Script version: 4.3.3" -Severity 1
+	Write-CMLogEntry -Value " - Script version: 4.3.4" -Severity 1
 	if ($PSCmdLet.ParameterSetName -like "Debug") {
 		Write-CMLogEntry -Value " - Apply driver package process initiated in debug mode" -Severity 1
 	}
