@@ -4,14 +4,43 @@ $ParseErrors = $null
 $Ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$null, [ref]$ParseErrors)
 if ($ParseErrors.Count) { throw ($ParseErrors.Message -join "; ") }
 
-foreach ($Name in @("Get-ComputerSystemType", "Confirm-SystemSKU", "Get-DeploymentType", "New-TerminatingErrorRecord", "Test-VirtualMachineDriverPackage")) {
+foreach ($Name in @("Get-OSBuild", "Get-ComputerSystemType", "Confirm-SystemSKU", "Get-DeploymentType", "New-TerminatingErrorRecord", "Test-VirtualMachineDriverPackage")) {
     $Node = $Ast.Find({ param($Item) $Item -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $Item.Name -eq $Name }.GetNewClosure(), $true)
     Invoke-Expression $Node.Extent.Text
 }
 $Node = $Ast.Find({ param($Item) $Item -is [System.Management.Automation.Language.AssignmentStatementAst] -and $Item.Left.Extent.Text -eq '$Script:VirtualMachinePackagePattern' }, $true)
 Invoke-Expression $Node.Extent.Text
 function Write-CMLogEntry { param($Value, $Severity) }
+function Get-ItemProperty {
+    param($Path, $Name, $ErrorAction)
+    if ($Script:DisplayVersionThrows) { throw "DisplayVersion unavailable" }
+    [pscustomobject]@{ DisplayVersion = $Script:DisplayVersion }
+}
 function Get-WmiObject { param($Class) $Script:TestSystem }
+foreach ($Case in @(
+    @("10.0.26300.1", "26H2"),
+    @("10.0.28000.1", "26H1"),
+    @("10.0.26200.1", "25H2")
+)) {
+    if ((Get-OSBuild -InputObject $Case[0] -OSName "Windows 11") -ne $Case[1]) {
+        throw "Incorrect Windows 11 build mapping: $($Case -join ', ')"
+    }
+}
+$Script:DisplayVersion = "27H1"
+$Script:DisplayVersionThrows = $false
+if ((Get-OSBuild -InputObject "10.0.29000.1" -OSName "Windows 11") -ne "27H1") {
+    throw "DisplayVersion fallback failed"
+}
+foreach ($Fallback in @(
+    @{ Value = "Preview"; Throws = $false },
+    @{ Value = $null; Throws = $true }
+)) {
+    $Script:DisplayVersion = $Fallback.Value
+    $Script:DisplayVersionThrows = $Fallback.Throws
+    $Blocked = $false
+    try { Get-OSBuild -InputObject "10.0.29000.1" -OSName "Windows 11" } catch { $Blocked = $true }
+    if (-not $Blocked) { throw "Invalid or missing DisplayVersion did not fail closed" }
+}
 function Test-Platform {
     [CmdletBinding(DefaultParameterSetName = "BareMetal")]
     param([Parameter(ParameterSetName = "Debug")][switch]$DebugMode)
@@ -25,6 +54,7 @@ $Cases = @(
     @("VirtualBox", "Oracle Corporation", "Hypervisor-VirtualBox"),
     @("Standard PC (Q35 + ICH9, 2009)", "QEMU", "Hypervisor-QEMUKVM"),
     @("KVM Virtual Machine", "Red Hat", "Hypervisor-QEMUKVM"),
+    @("Standard PC (Q35 + ICH9, 2009)", "Contoso", "Physical-Unknown"),
     @("XenEnterprise", "Xen", "Hypervisor-XenCitrix"),
     @("HVM domU", "Citrix", "Hypervisor-XenCitrix"),
     @("Surface Pro", "Microsoft Corporation", "OEM-Surface"),
