@@ -39,6 +39,27 @@ as `Physical-Unknown` and still use the existing manufacturer/model package matc
 OEM labels are informational: they do not replace manufacturer normalization, SKU
 detection, or package validation, and do not trigger vendor tools or MSI installers.
 
+## Virtual-machine servicing boundaries
+
+`-AllowVirtualMachine` permits only explicitly labelled virtual-hardware driver
+packages to pass the normal package-selection and INF deployment workflow. This
+supports packages such as extracted VirtIO, VMXNET, PVSCSI, and Xen drivers. It
+does not install or update VMware Tools, VirtualBox Guest Additions, Citrix VM
+Tools, Parallels Tools, or other integration-suite installers. Hyper-V integration
+components for supported Windows guests are serviced by Windows.
+
+Secure Boot certificate rotation is also outside this script's scope. The 2026
+Microsoft Secure Boot certificate transition changes UEFI PK, KEK, DB, and boot
+manager trust state; it is not a driver-package operation. Remediation differs by
+hypervisor, VM hardware version, Secure Boot state, vTPM state, guest operating
+system, and host patch level. Follow Microsoft's
+[Secure Boot certificate updates guidance](https://support.microsoft.com/help/5062713)
+and the hypervisor vendor's current guidance. Do not modify virtual NVRAM,
+replace platform keys, or infer readiness from the platform label produced by
+this script. Use Microsoft's supported fleet inventory and event-based monitoring
+rather than treating a simple certificate-name string search as a complete
+readiness test.
+
 Existing manufacturer, exact model, Windows version, and architecture matching
 rules still apply. Packages must also be explicitly labelled for virtual hardware
 in their name, description, or manufacturer. Detection of another numbered VMware
