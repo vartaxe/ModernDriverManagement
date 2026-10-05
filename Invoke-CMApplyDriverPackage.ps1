@@ -30,7 +30,7 @@
 	Specify the internal fully qualified domain name of the server hosting the AdminService, e.g. CM01.domain.local.
 
 .PARAMETER XMLDeploymentType
-	Specify the deployment type mode for XML based driver package deployments, e.g. 'BareMetal', 'OSUpdate', 'DriverUpdate', 'PreCache'.
+	Specify the deployment type mode for XML based driver package deployments: 'BareMetal', 'OSUpgrade', 'DriverUpdate', or 'PreCache'. 'OSUpdate' is retained as an alias for 'OSUpgrade'.
 
 .PARAMETER UserName
 	Specify the service account user name used for authenticating against the AdminService endpoint.
@@ -238,6 +238,14 @@
 	4.3.2 - (2026-10-05) - Added explicit Windows 11 26H2 support:
 						 - TargetOSVersion now accepts '26H2' for BareMetal, OSUpgrade, PreCache, and XMLPackage runs.
 						 - Get-OSBuild translates OS build 26300 to '26H2' for DriverUpdate runs.
+	4.3.3 - (2026-10-05) - Detect VMware model identifiers without maintaining a per-model list:
+						 - Models beginning with 'VMware' are detected using the VMware* wildcard, covering legacy and future model strings.
+						 - Virtual-machine execution still requires AllowVirtualMachine outside DebugMode, and driver package model matching remains exact.
+						 - Hyper-V detection requires both the exact 'Virtual Machine' model and a manufacturer containing 'Microsoft'.
+						 - Platform detection identifies VMware, Hyper-V, QEMU/KVM, VirtualBox, and Xen while preserving existing package matching and VM opt-in requirements.
+						 - Physical OEM classification runs only after hypervisor checks; unknown brands retain normal package validation without an automatic driver fallback.
+						 - Xen/Citrix detection checks model and manufacturer for Xen or Citrix, retains HVM domU, and recognizes XenServer/Citrix package labels.
+						 - Fixed Arm64 fallback package parsing, exact SKU token matching, XML OSUpdate/OSUpgrade staging, missing XML file termination, and DriverUpdate exit-code handling.
 #>
 [CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = "BareMetal")]
 param(
@@ -275,9 +283,9 @@ param(
 	[ValidateNotNullOrEmpty()]
 	[string]$Endpoint,
 	
-	[parameter(Mandatory = $false, ParameterSetName = "XMLPackage", HelpMessage = "Specify the deployment type mode for XML based driver package deployments, e.g. 'BareMetal', 'OSUpdate', 'DriverUpdate', 'PreCache'.")]
+	[parameter(Mandatory = $false, ParameterSetName = "XMLPackage", HelpMessage = "Specify BareMetal, OSUpgrade (OSUpdate alias), DriverUpdate, or PreCache.")]
 	[ValidateNotNullOrEmpty()]
-	[ValidateSet("BareMetal", "OSUpdate", "DriverUpdate", "PreCache")]
+	[ValidateSet("BareMetal", "OSUpgrade", "OSUpdate", "DriverUpdate", "PreCache")]
 	[string]$XMLDeploymentType = "BareMetal",
 	
 	[parameter(Mandatory = $true, ParameterSetName = "Debug", HelpMessage = "Specify the service account user name used for authenticating against the AdminService endpoint.")]
@@ -389,8 +397,8 @@ Begin {
 	# Enable TLS 1.2 support for downloading modules from PSGallery
 	[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 	$Script:IsVirtualMachine = $false
-	$Script:VirtualMachineModels = @("Virtual Machine", "VMware Virtual Platform", "VirtualBox", "HVM domU", "KVM", "VMware7,1")
-	$Script:VirtualMachinePackagePattern = "\b(virtual machine|vmware|vmxnet|pvscsi|hyper[- ]?v|parallels|virtualbox|virtio|kvm|xen)\b"
+	$Script:ComputerPlatform = "Physical-Unknown"
+	$Script:VirtualMachinePackagePattern = "\b(virtual machine|vmware(?:\s*\d+,\d+)?|vmxnet|pvscsi|hyper[- ]?v|parallels|virtualbox|virtio|qemu|proxmox|kvm|xen(?:server|enterprise)?|citrix)\b"
 }
 Process {
 	# Set Log Path
@@ -663,6 +671,9 @@ Process {
 			"XMLPackage" {
 				# Set required variables for XMLPackage parameter set
 				$Script:DeploymentMode = $Script:XMLDeploymentType
+				if ($Script:DeploymentMode -eq "OSUpdate") {
+					$Script:DeploymentMode = "OSUpgrade"
+				}
 				$Script:PackageSource = "XML Package Logic file"
 				
 				# Define the path for the pre-downloaded XML Package Logic file called DriverPackages.xml
@@ -670,7 +681,7 @@ Process {
 				if (-not (Test-Path -Path $XMLPackageLogicFile)) {
 					Write-CMLogEntry -Value " - Failed to locate required 'DriverPackages.xml' logic file for XMLPackage deployment type, ensure it has been pre-downloaded in a Download Package Content step before running this script" -Severity 3
 					
-					# Throw terminating error					$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
+					$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
 				}
 			}
 			default {
@@ -1696,13 +1707,72 @@ Process {
 	}
 
 	function Get-ComputerSystemType {
-		$ComputerSystemType = Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty "Model"
-		if ($ComputerSystemType -notin $Script:VirtualMachineModels) {
-			$Script:IsVirtualMachine = $false
+		$ComputerSystem = Get-WmiObject -Class "Win32_ComputerSystem"
+		$ComputerSystemType = ([string]$ComputerSystem.Model).Trim()
+		$ComputerSystemManufacturer = ([string]$ComputerSystem.Manufacturer).Trim()
+		if ($ComputerSystemType -like "VMware*") {
+			$Script:ComputerPlatform = "Hypervisor-VMware"
+		}
+		elseif (($ComputerSystemType -eq "Virtual Machine") -and ($ComputerSystemManufacturer -like "*Microsoft*")) {
+			$Script:ComputerPlatform = "Hypervisor-HyperV"
+		}
+		elseif ($ComputerSystemType -eq "VirtualBox") {
+			$Script:ComputerPlatform = "Hypervisor-VirtualBox"
+		}
+		elseif (($ComputerSystemType -eq "HVM domU") -or ($ComputerSystemType -like "*Xen*") -or
+			($ComputerSystemType -like "*Citrix*") -or ($ComputerSystemManufacturer -like "*Xen*") -or
+			($ComputerSystemManufacturer -like "*Citrix*")) {
+			$Script:ComputerPlatform = "Hypervisor-XenCitrix"
+		}
+		elseif (($ComputerSystemType -like "*Standard PC*") -or ($ComputerSystemType -like "*KVM*") -or
+			($ComputerSystemManufacturer -like "*QEMU*") -or
+			(($ComputerSystemManufacturer -like "*Red Hat*") -and ($ComputerSystemType -like "*Virtual Machine*"))) {
+			$Script:ComputerPlatform = "Hypervisor-QEMUKVM"
+		}
+		else {
+			$Script:ComputerPlatform = "Physical-Unknown"
+			switch -Wildcard ($ComputerSystemManufacturer) {
+				"*Dell*" {
+					if ($ComputerSystemType -like "*Alienware*") {
+						$Script:ComputerPlatform = "OEM-Alienware"
+					}
+					else {
+						$Script:ComputerPlatform = "OEM-Dell"
+					}
+					break
+				}
+				"*Alienware*" { $Script:ComputerPlatform = "OEM-Alienware"; break }
+				"*HP*" { $Script:ComputerPlatform = "OEM-HP"; break }
+				"*Hewlett-Packard*" { $Script:ComputerPlatform = "OEM-HP"; break }
+				"*Lenovo*" { $Script:ComputerPlatform = "OEM-Lenovo"; break }
+				"*Fujitsu*" { $Script:ComputerPlatform = "OEM-Fujitsu"; break }
+				"*Panasonic*" { $Script:ComputerPlatform = "OEM-Panasonic"; break }
+				"*ASUS*" { $Script:ComputerPlatform = "OEM-ASUS"; break }
+				"*ASUSTeK*" { $Script:ComputerPlatform = "OEM-ASUS"; break }
+				"*Acer*" { $Script:ComputerPlatform = "OEM-Acer"; break }
+				"*Intel*" {
+					if ($ComputerSystemType -like "*NUC*") {
+						$Script:ComputerPlatform = "OEM-IntelNUC"
+					}
+					else {
+						$Script:ComputerPlatform = "OEM-Intel"
+					}
+					break
+				}
+				"*Microsoft*" {
+					if ($ComputerSystemType -like "*Surface*") {
+						$Script:ComputerPlatform = "OEM-Surface"
+					}
+					break
+				}
+			}
+		}
+		$Script:IsVirtualMachine = $Script:ComputerPlatform -like "Hypervisor-*"
+		Write-CMLogEntry -Value " - Detected computer platform: '$($Script:ComputerPlatform)' | Manufacturer: '$($ComputerSystemManufacturer)' | Model: '$($ComputerSystemType)'" -Severity 1
+		if (-not $Script:IsVirtualMachine) {
 			Write-CMLogEntry -Value " - Supported computer platform detected, script execution allowed to continue" -Severity 1
 		}
 		else {
-			$Script:IsVirtualMachine = $true
 			if ($AllowVirtualMachine) {
 				Write-CMLogEntry -Value " - Virtual machine platform detected: '$($ComputerSystemType)'. Execution explicitly allowed by -AllowVirtualMachine; only virtual-machine driver packages will be eligible" -Severity 2
 			}
@@ -2014,7 +2084,7 @@ Process {
 						}
 						
 						# Add driver package OS architecture details to custom driver package details object
-						if ($DriverPackageItem.Name -match "^.*(?<Architecture>(x86|x64)).*") {
+						if ($DriverPackageItem.Name -match "^.*(?<Architecture>(x86|x64|Arm64)).*") {
 							$DriverPackageDetails.Architecture = $Matches.Architecture
 						}
 						
@@ -2207,91 +2277,20 @@ Process {
 			[PSCustomObject]$ComputerData
 		)
 		
-		# Handle multiple SystemSKU's from driver package input and determine the proper delimiter
-		if ($DriverPackageInput -match ",") {
-			$SystemSKUDelimiter = ","
-		}
-		if ($DriverPackageInput -match ";") {
-			$SystemSKUDelimiter = ";"
-		}
-		
-		# Remove any space characters from driver package input data, replace them with a comma instead and ensure there's no duplicate entries
-		$DriverPackageInputArray = $DriverPackageInput.Replace(" ", ",").Split($SystemSKUDelimiter) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
-		
-		# Construct custom object for return value
+		$DriverPackageInputArray = $DriverPackageInput -split "[,;\s]+" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
 		$SystemSKUDetectionResult = [PSCustomObject]@{
-			Detected = $null
-			SystemSKUValue = $null
+			Detected = $false
+			SystemSKUValue = ""
 		}
-		
-		# Attempt to determine if the driver package input matches with the computer data input and account for multiple SystemSKU's by separating them with the detected delimiter
-		if (-not ([string]::IsNullOrEmpty($SystemSKUDelimiter))) {
-			# Construct table for keeping track of matched SystemSKU items
-			$SystemSKUTable = @{
-			}
-			
-			# Attempt to match for each SystemSKU item based on computer data input
-			foreach ($SystemSKUItem in $DriverPackageInputArray) {
-				if ((-not([string]::IsNullOrEmpty($ComputerData.SystemSKU))) -and ($ComputerData.SystemSKU -eq $SystemSKUItem)) {
-					# Add key value pair with match success
-					$SystemSKUTable.Add($SystemSKUItem, $true)
-					
-					# Set custom object property with SystemSKU value that was matched on the detection result object
-					$SystemSKUDetectionResult.SystemSKUValue = $SystemSKUItem
-				}
-				else {
-					# Add key value pair with match failure
-					$SystemSKUTable.Add($SystemSKUItem, $false)
-				}
-			}
-			
-			# Check if table contains a matched SystemSKU
-			if ($SystemSKUTable.Values -contains $true) {
-				# SystemSKU match found based upon multiple items detected in computer data input
-				Write-CMLogEntry -Value " - Matched SystemSKU: $($ComputerData.SystemSKU)" -Severity 1
-				
-				# Set custom object property that SystemSKU value that was matched on the detection result object
+		foreach ($CandidateSKU in @($ComputerData.SystemSKU, $ComputerData.FallbackSKU)) {
+			if ((-not [string]::IsNullOrWhiteSpace($CandidateSKU)) -and ($DriverPackageInputArray -contains $CandidateSKU)) {
+				Write-CMLogEntry -Value " - Matched SystemSKU: $($CandidateSKU)" -Severity 1
 				$SystemSKUDetectionResult.Detected = $true
-				
-				return $SystemSKUDetectionResult
-			}
-			else {
-				# SystemSKU match was not found based upon multiple items detected in computer data input
-				# Set properties for custom object for return value
-				$SystemSKUDetectionResult.SystemSKUValue = ""
-				$SystemSKUDetectionResult.Detected = $false
-				
+				$SystemSKUDetectionResult.SystemSKUValue = $CandidateSKU
 				return $SystemSKUDetectionResult
 			}
 		}
-		elseif ($DriverPackageInput -match $ComputerData.SystemSKU) {
-			# SystemSKU match found based upon single item detected in computer data input
-			Write-CMLogEntry -Value " - Matched SystemSKU: $($ComputerData.SystemSKU)" -Severity 1
-			
-			# Set properties for custom object for return value
-			$SystemSKUDetectionResult.SystemSKUValue = $ComputerData.SystemSKU
-			$SystemSKUDetectionResult.Detected = $true
-			
-			return $SystemSKUDetectionResult
-		}
-		elseif ((-not ([string]::IsNullOrEmpty($ComputerData.FallbackSKU))) -and ($DriverPackageInput -match $ComputerData.FallbackSKU)) {
-			# SystemSKU match found using FallbackSKU value using detection method OEMString, this should only be valid for Dell
-			Write-CMLogEntry -Value " - Matched SystemSKU: $($ComputerData.FallbackSKU)" -Severity 1
-			
-			# Set properties for custom object for return value
-			$SystemSKUDetectionResult.SystemSKUValue = $ComputerData.FallbackSKU
-			$SystemSKUDetectionResult.Detected = $true
-			
-			return $SystemSKUDetectionResult
-		}
-		else {
-			# None of the above methods worked to match SystemSKU from driver package input with computer data input
-			# Set properties for custom object for return value
-			$SystemSKUDetectionResult.SystemSKUValue = ""
-			$SystemSKUDetectionResult.Detected = $false
-			
-			return $SystemSKUDetectionResult
-		}
+		return $SystemSKUDetectionResult
 	}
 	
 	function Confirm-DriverPackageList {
@@ -2623,8 +2622,18 @@ Process {
 			"DriverUpdate" {
 				# Apply drivers recursively from downloaded driver package location
 				Write-CMLogEntry -Value " - Driver package content downloaded successfully, attempting to apply drivers using pnputil.exe located in: $($ContentLocation)" -Severity 1
-				$ApplyDriverInvocation = Invoke-Executable -FilePath "powershell.exe" -Arguments "pnputil /add-driver $(Join-Path -Path $ContentLocation -ChildPath '*.inf') /subdirs /install | Out-File -FilePath (Join-Path -Path $($LogsDirectory) -ChildPath 'Install-Drivers.txt') -Force"
-				Write-CMLogEntry -Value " - Successfully installed drivers" -Severity 1
+				$DriverPath = (Join-Path -Path $ContentLocation -ChildPath '*.inf').Replace("'", "''")
+				$DriverLogPath = (Join-Path -Path $LogsDirectory -ChildPath 'Install-Drivers.txt').Replace("'", "''")
+				$DriverInstallCommand = "`$ErrorActionPreference = 'Stop'; & pnputil.exe /add-driver '$($DriverPath)' /subdirs /install | Out-File -FilePath '$($DriverLogPath)' -Force; exit `$LASTEXITCODE"
+				$EncodedCommand = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($DriverInstallCommand))
+				$ApplyDriverInvocation = Invoke-Executable -FilePath "powershell.exe" -Arguments "-NoProfile -NonInteractive -EncodedCommand $($EncodedCommand)"
+				if ($ApplyDriverInvocation -in @(0, 3010)) {
+					Write-CMLogEntry -Value " - Driver installation completed. Exit code: $($ApplyDriverInvocation); code 3010 indicates a restart is required" -Severity 1
+				}
+				else {
+					Write-CMLogEntry -Value " - Driver installation failed with exit code: $($ApplyDriverInvocation). See Install-Drivers.txt for details" -Severity 3
+					$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
+				}
 			}
 			"PreCache" {
 				# Driver package content downloaded successfully, log output and exit script
@@ -2655,7 +2664,7 @@ Process {
 	}
 	
 	Write-CMLogEntry -Value "[ApplyDriverPackage]: Apply Driver Package process initiated" -Severity 1
-	Write-CMLogEntry -Value " - Script version: 4.3.1" -Severity 1
+	Write-CMLogEntry -Value " - Script version: 4.3.3" -Severity 1
 	if ($PSCmdLet.ParameterSetName -like "Debug") {
 		Write-CMLogEntry -Value " - Apply driver package process initiated in debug mode" -Severity 1
 	}
