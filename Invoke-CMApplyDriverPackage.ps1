@@ -113,7 +113,7 @@
 	Author:      Nickolaj Andersen / Maurice Daly
     Contact:     @NickolajA / @MoDaly_IT
     Created:     2017-03-27
-    Updated:     2026-09-03
+    Updated:     2026-10-05
 	
 	Contributors: @CodyMathis123, @JamesMcwatty @EdenNelson
     
@@ -235,6 +235,9 @@
 						 - Get-AuthDomainName resolves the Active Directory DNS domain from, in order: the OSDDOMAINNAME / OSDJoinDomainName task sequence variables, the domain membership of the running device (full OS only), and the DNS suffix of the AdminService endpoint or management point host name (the only sources available in WinPE).
 						 - Get-AdminServiceItem now retries the request with the UPN form (user@domain.com) and then the down-level form (DOMAIN\user) when, and only when, the AdminService responds with 401 Unauthorized. The configured value is always attempted first so a working environment is unchanged, the working credential is reused for the remainder of the run, and a run where every format is rejected logs explicit guidance to move the account to UPN format.
 						 - The self-signed certificate callback was moved into Set-CertificateValidationCallback and is now only registered once per run. Previously Add-Type ran on every certificate failure, so a second AdminService call hitting the same condition failed with a duplicate type error.
+	4.3.2 - (2026-10-05) - Added explicit Windows 11 26H2 support:
+						 - TargetOSVersion now accepts '26H2' for BareMetal, OSUpgrade, PreCache, and XMLPackage runs.
+						 - Get-OSBuild translates OS build 26300 to '26H2' for DriverUpdate runs.
 #>
 [CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = "BareMetal")]
 param(
@@ -310,7 +313,7 @@ param(
 	[parameter(Mandatory = $true, ParameterSetName = "Debug")]
 	[parameter(Mandatory = $false, ParameterSetName = "XMLPackage")]
 	[ValidateNotNullOrEmpty()]
-	[ValidateSet("26H1", "25H2", "24H2", "23H2", "22H2", "21H2", "21H1", "20H2", "2004", "1909", "1903", "1809", "1803", "1709", "1703", "1607")]
+	[ValidateSet("26H2", "26H1", "25H2", "24H2", "23H2", "22H2", "21H2", "21H1", "20H2", "2004", "1909", "1903", "1809", "1803", "1709", "1703", "1607")]
 	[string]$TargetOSVersion,
 	
 	[parameter(Mandatory = $false, ParameterSetName = "BareMetal", HelpMessage = "Define the value that will be used as the target operating system architecture e.g. 'x64', 'x86' or 'Arm64'.")]
@@ -1308,6 +1311,9 @@ Process {
 		switch ($OSName) {
 			"Windows 11" {
 				switch (([System.Version]$InputObject).Build) {
+					"26300" {
+						$OSVersion = '26H2'
+					}
 					"28000" {
 						$OSVersion = '26H1'
 					}
