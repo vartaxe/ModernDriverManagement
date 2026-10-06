@@ -13,7 +13,10 @@ unsupported with Configuration Manager 2509, 2603, and 2609. Check the current
 [Windows ADK download guidance](https://learn.microsoft.com/windows-hardware/get-started/adk-install)
 and
 [Configuration Manager ADK support matrix](https://learn.microsoft.com/intune/configmgr/core/plan-design/configs/support-for-windows-adk)
-before updating a boot image.
+before updating a boot image. Re-download the current ADK installer when Microsoft
+replaces a release and apply the latest
+[ADK servicing update](https://learn.microsoft.com/windows-hardware/get-started/adk-servicing);
+the ADK download page identifies current security fixes and prerequisites.
 
 The WinPE boot image must include the optional components required by this script,
 including WinPE-WMI and WinPE-PowerShell with their dependencies. Configuration
@@ -77,7 +80,7 @@ Microsoft Secure Boot certificate transition changes UEFI PK, KEK, DB, and boot
 manager trust state; it is not a driver-package operation. Remediation differs by
 hypervisor, VM hardware version, Secure Boot state, vTPM state, guest operating
 system, and host patch level. Follow Microsoft's
-[Secure Boot certificate updates guidance](https://support.microsoft.com/help/5062713)
+[Secure Boot certificate updates guidance](https://support.microsoft.com/en-us/servicing/os/secure-boot/2025/06/secure-boot-certificate-updates-guidance-for-it-professionals-and-organizations)
 and the hypervisor vendor's current guidance. Do not modify virtual NVRAM,
 replace platform keys, or infer readiness from the platform label produced by
 this script. Use Microsoft's supported fleet inventory and event-based monitoring
