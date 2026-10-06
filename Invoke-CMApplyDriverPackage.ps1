@@ -249,7 +249,14 @@
 	4.3.4 - (2026-10-05) - Hardened release and platform compatibility guidance after an authoritative-source audit:
 						 - Standard PC identifies QEMU/KVM only when the manufacturer also indicates QEMU or Red Hat, avoiding a model-only virtual-machine classification.
 						 - Clarified that DisplayVersion is a validated fallback rather than a guaranteed release contract.
+	4.3.5 - (2026-10-06) - Hardened AdminService authentication:
+						 - Replaced runtime PSIntuneAuth installation with direct OAuth token acquisition for external AdminService endpoints.
+						 - Replaced unconditional certificate validation bypass with explicit leaf-certificate thumbprint pinning.
+						 - Normalized Panasonic package matching to the manufacturer value emitted by Driver Automation Tool.
+						 - PreCache now leaves compressed content intact; WIM content is dismounted before recursive processing and DISM logs are retained with task-sequence logs.
 #>
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingPlainTextForPassword", "", Justification = "Configuration Manager exposes task-sequence variables as strings; the value is converted immediately for Windows authentication and cleared after external token acquisition.")]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingConvertToSecureStringWithPlainText", "", Justification = "Configuration Manager exposes task-sequence variables as strings; conversion to PSCredential is required for Invoke-RestMethod on Windows PowerShell 5.1.")]
 [CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = "BareMetal")]
 param(
 	[parameter(Mandatory = $true, ParameterSetName = "BareMetal", HelpMessage = "Set the script to operate in 'BareMetal' deployment type mode.")]
@@ -285,6 +292,13 @@ param(
 	[parameter(Mandatory = $true, ParameterSetName = "Debug")]
 	[ValidateNotNullOrEmpty()]
 	[string]$Endpoint,
+
+	[parameter(Mandatory = $false, ParameterSetName = "BareMetal", HelpMessage = "Pin the SHA-1 thumbprint of the internal AdminService leaf certificate when its issuing CA is not trusted by the deployment environment.")]
+	[parameter(Mandatory = $false, ParameterSetName = "DriverUpdate")]
+	[parameter(Mandatory = $false, ParameterSetName = "OSUpgrade")]
+	[parameter(Mandatory = $false, ParameterSetName = "PreCache")]
+	[parameter(Mandatory = $false, ParameterSetName = "Debug")]
+	[string]$AdminServiceCertificateThumbprint,
 	
 	[parameter(Mandatory = $false, ParameterSetName = "XMLPackage", HelpMessage = "Specify BareMetal, OSUpgrade (OSUpdate alias), DriverUpdate, or PreCache.")]
 	[ValidateNotNullOrEmpty()]
@@ -293,11 +307,11 @@ param(
 	
 	[parameter(Mandatory = $true, ParameterSetName = "Debug", HelpMessage = "Specify the service account user name used for authenticating against the AdminService endpoint.")]
 	[ValidateNotNullOrEmpty()]
-	[string]$UserName = "",
+	[string]$UserName,
 	
 	[parameter(Mandatory = $true, ParameterSetName = "Debug", HelpMessage = "Specify the service account password used for authenticating against the AdminService endpoint.")]
 	[ValidateNotNullOrEmpty()]
-	[string]$Password = "",
+	[string]$Password,
 	
 	[parameter(Mandatory = $false, ParameterSetName = "BareMetal", HelpMessage = "Define a filter used when calling the AdminService to only return objects matching the filter.")]
 	[parameter(Mandatory = $false, ParameterSetName = "DriverUpdate")]
@@ -397,7 +411,7 @@ Begin {
 		}
 	}
 	
-	# Enable TLS 1.2 support for downloading modules from PSGallery
+	# Enable TLS 1.2 support for AdminService and Microsoft identity platform requests
 	[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 	$Script:IsVirtualMachine = $false
 	$Script:ComputerPlatform = "Physical-Unknown"
@@ -826,6 +840,18 @@ Process {
 				}
 			}
 		}
+
+		if (($Script:AdminServiceEndpointType -like "Internal") -and [string]::IsNullOrWhiteSpace($Script:AdminServiceCertificateThumbprint) -and ($Script:PSCmdLet.ParameterSetName -notlike "Debug")) {
+			$Script:AdminServiceCertificateThumbprint = $TSEnvironment.Value("MDMAdminServiceCertificateThumbprint")
+		}
+		if (-not [string]::IsNullOrWhiteSpace($Script:AdminServiceCertificateThumbprint)) {
+			$Script:AdminServiceCertificateThumbprint = $Script:AdminServiceCertificateThumbprint -replace "\s", ""
+			if ($Script:AdminServiceCertificateThumbprint -notmatch "^[A-Fa-f0-9]{40}$") {
+				Write-CMLogEntry -Value " - AdminService certificate thumbprint must contain exactly 40 hexadecimal characters" -Severity 3
+				$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
+			}
+			Write-CMLogEntry -Value " - Internal AdminService certificate pinning is configured for thumbprint: $($Script:AdminServiceCertificateThumbprint)" -Severity 1
+		}
 	}
 	
 	function Get-AdminServiceEndpointType {
@@ -901,47 +927,28 @@ Process {
 		Write-CMLogEntry -Value " - Setting 'AdminServiceURL' variable to: $($Script:AdminServiceURL)" -Severity 1
 	}
 	
-	function Install-AuthModule {
-		# Determine if the PSIntuneAuth module needs to be installed
-		try {
-			Write-CMLogEntry -Value " - Attempting to locate PSIntuneAuth module" -Severity 1
-			$PSIntuneAuthModule = Get-InstalledModule -Name "PSIntuneAuth" -ErrorAction Stop -Verbose:$false
-			if ($PSIntuneAuthModule -ne $null) {
-				Write-CMLogEntry -Value " - Authentication module detected, checking for latest version" -Severity 1
-				$LatestModuleVersion = (Find-Module -Name "PSIntuneAuth" -ErrorAction SilentlyContinue -Verbose:$false).Version
-				if ($LatestModuleVersion -gt $PSIntuneAuthModule.Version) {
-					Write-CMLogEntry -Value " - Latest version of PSIntuneAuth module is not installed, attempting to install: $($LatestModuleVersion.ToString())" -Severity 1
-					$UpdateModuleInvocation = Update-Module -Name "PSIntuneAuth" -Scope CurrentUser -Force -ErrorAction Stop -Confirm:$false -Verbose:$false
-				}
-			}
-		}
-		catch [System.Exception] {
-			Write-CMLogEntry -Value " - Unable to detect PSIntuneAuth module, attempting to install from PSGallery" -Severity 2
-			try {
-				# Install NuGet package provider
-				$PackageProvider = Install-PackageProvider -Name "NuGet" -Force -Verbose:$false
-				
-				# Install PSIntuneAuth module
-				Install-Module -Name "PSIntuneAuth" -Scope AllUsers -Force -ErrorAction Stop -Confirm:$false -Verbose:$false
-				Write-CMLogEntry -Value " - Successfully installed PSIntuneAuth module" -Severity 1
-			}
-			catch [System.Exception] {
-				Write-CMLogEntry -Value " - An error occurred while attempting to install PSIntuneAuth module. Error message: $($_.Exception.Message)" -Severity 3
-				
-				# Throw terminating error				
-				$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
-			}
-		}
-	}
-	
 	function Get-AuthToken {
+		$TokenRequest = $null
+		$TokenResponse = $null
 		try {
-			# Attempt to install PSIntuneAuth module, if already installed ensure the latest version is being used
-			Install-AuthModule
-			
-			# Retrieve authentication token
+			# Retrieve an OAuth token directly so deployment never installs or executes a gallery module as SYSTEM
 			Write-CMLogEntry -Value " - Attempting to retrieve authentication token using native client with ID: $($ClientID)" -Severity 1
-			$Script:AuthToken = Get-MSIntuneAuthToken -TenantName $TenantName -ClientID $ClientID -Credential $Credential -Resource $ApplicationIDURI -RedirectUri "https://login.microsoftonline.com/common/oauth2/nativeclient" -ErrorAction Stop
+			$TenantIdentifier = [Uri]::EscapeDataString($TenantName.Trim())
+			$TokenUri = "https://login.microsoftonline.com/$($TenantIdentifier)/oauth2/token"
+			$TokenRequest = @{
+				grant_type = "password"
+				client_id = $ClientID
+				resource = $ApplicationIDURI
+				username = $Credential.UserName
+				password = $Script:Password
+			}
+			$TokenResponse = Invoke-RestMethod -Method Post -Uri $TokenUri -Body $TokenRequest -ContentType "application/x-www-form-urlencoded" -ErrorAction Stop
+			if ([string]::IsNullOrWhiteSpace($TokenResponse.token_type) -or [string]::IsNullOrWhiteSpace($TokenResponse.access_token)) {
+				throw "The Microsoft identity platform response did not contain a token type and access token"
+			}
+			$Script:AuthToken = @{
+				Authorization = "$($TokenResponse.token_type) $($TokenResponse.access_token)"
+			}
 			Write-CMLogEntry -Value " - Successfully retrieved authentication token" -Severity 1
 		}
 		catch [System.Exception] {
@@ -949,6 +956,16 @@ Process {
 			
 			# Throw terminating error			
 			$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
+		}
+		finally {
+			if ($null -ne $TokenRequest) {
+				$TokenRequest.password = $null
+			}
+			if ($null -ne $TokenResponse) {
+				$TokenResponse.access_token = $null
+			}
+			$Script:Password = $null
+			$Script:Credential = $null
 		}
 	}
 	
@@ -1092,31 +1109,76 @@ Process {
 		return (New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList @($UserName, $EncryptedPassword))
 	}
 
-	function Set-CertificateValidationCallback {
+	function Enable-AdminServiceCertificatePinning {
 		<#
 		.SYNOPSIS
-			Configure the current session to ignore self-signed certificate validation errors.
+			Temporarily permit an untrusted AdminService certificate only when its leaf thumbprint matches.
 
 		.DESCRIPTION
-			Previously performed inline in Get-AdminServiceItem, which called Add-Type on every
-			certificate failure. A second AdminService call hitting the same condition would then fail
-			because the type already existed, so the definition is now added at most once per run.
+			The callback rejects name mismatches and any certificate other than the configured pin.
+			Disable-AdminServiceCertificatePinning restores the prior process callback immediately
+			after the retry.
 		#>
-		if ($Script:CertificateValidationCallbackEnabled -eq $true) {
-			return
+		if ([string]::IsNullOrWhiteSpace($Script:AdminServiceCertificateThumbprint)) {
+			throw "No AdminService certificate thumbprint was configured"
 		}
 
-		# Attempt to ignore self-signed certificate binding for AdminService
-		# Convert encoded base64 string for ignore self-signed certificate validation functionality
-		$CertificationValidationCallbackEncoded = "DQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAdQBzAGkAbgBnACAAUwB5AHMAdABlAG0AOwANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAB1AHMAaQBuAGcAIABTAHkAcwB0AGUAbQAuAE4AZQB0ADsADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAdQBzAGkAbgBnACAAUwB5AHMAdABlAG0ALgBOAGUAdAAuAFMAZQBjAHUAcgBpAHQAeQA7AA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgAHUAcwBpAG4AZwAgAFMAeQBzAHQAZQBtAC4AUwBlAGMAdQByAGkAdAB5AC4AQwByAHkAcAB0AG8AZwByAGEAcABoAHkALgBYADUAMAA5AEMAZQByAHQAaQBmAGkAYwBhAHQAZQBzADsADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAcAB1AGIAbABpAGMAIABjAGwAYQBzAHMAIABTAGUAcgB2AGUAcgBDAGUAcgB0AGkAZgBpAGMAYQB0AGUAVgBhAGwAaQBkAGEAdABpAG8AbgBDAGEAbABsAGIAYQBjAGsADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAewANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgAHAAdQBiAGwAaQBjACAAcwB0AGEAdABpAGMAIAB2AG8AaQBkACAASQBnAG4AbwByAGUAKAApAA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAewANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAaQBmACgAUwBlAHIAdgBpAGMAZQBQAG8AaQBuAHQATQBhAG4AYQBnAGUAcgAuAFMAZQByAHYAZQByAEMAZQByAHQAaQBmAGkAYwBhAHQAZQBWAGEAbABpAGQAYQB0AGkAbwBuAEMAYQBsAGwAYgBhAGMAawAgAD0APQBuAHUAbABsACkADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgAHsADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAUwBlAHIAdgBpAGMAZQBQAG8AaQBuAHQATQBhAG4AYQBnAGUAcgAuAFMAZQByAHYAZQByAEMAZQByAHQAaQBmAGkAYwBhAHQAZQBWAGEAbABpAGQAYQB0AGkAbwBuAEMAYQBsAGwAYgBhAGMAawAgACsAPQAgAA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAZABlAGwAZQBnAGEAdABlAA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAKAANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAATwBiAGoAZQBjAHQAIABvAGIAagAsACAADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgAFgANQAwADkAQwBlAHIAdABpAGYAaQBjAGEAdABlACAAYwBlAHIAdABpAGYAaQBjAGEAdABlACwAIAANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAWAA1ADAAOQBDAGgAYQBpAG4AIABjAGgAYQBpAG4ALAAgAA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIABTAHMAbABQAG8AbABpAGMAeQBFAHIAcgBvAHIAcwAgAGUAcgByAG8AcgBzAA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAKQANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgAHsADQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgAHIAZQB0AHUAcgBuACAAdAByAHUAZQA7AA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAfQA7AA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAB9AA0ACgAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAfQANAAoAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAAgACAAIAB9AA0ACgAgACAAIAAgACAAIAAgACAA"
-		$CertificationValidationCallback = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($CertificationValidationCallbackEncoded))
+		if (-not ("AdminServiceCertificateValidation" -as [type])) {
+			Add-Type -TypeDefinition @"
+using System;
+using System.Net;
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
 
-		# Load required type definition to be able to ignore self-signed certificate to circumvent issues with AdminService running with ConfigMgr self-signed certificate binding
-		if (-not ("ServerCertificateValidationCallback" -as [type])) {
-			Add-Type -TypeDefinition $CertificationValidationCallback
+public static class AdminServiceCertificateValidation
+{
+	private static RemoteCertificateValidationCallback previousCallback;
+	private static string expectedThumbprint;
+
+	public static void Enable(string thumbprint)
+	{
+		if (expectedThumbprint != null)
+		{
+			throw new InvalidOperationException("AdminService certificate pinning is already enabled.");
 		}
-		[ServerCertificateValidationCallback]::Ignore()
-		$Script:CertificateValidationCallbackEnabled = $true
+
+		expectedThumbprint = thumbprint.Replace(" ", String.Empty);
+		previousCallback = ServicePointManager.ServerCertificateValidationCallback;
+		ServicePointManager.ServerCertificateValidationCallback = Validate;
+	}
+
+	private static bool Validate(object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors errors)
+	{
+		if (errors == SslPolicyErrors.None)
+		{
+			return previousCallback == null || previousCallback(sender, certificate, chain, errors);
+		}
+
+		if (errors != SslPolicyErrors.RemoteCertificateChainErrors || certificate == null)
+		{
+			return false;
+		}
+
+		X509Certificate2 certificate2 = certificate as X509Certificate2 ?? new X509Certificate2(certificate);
+		return String.Equals(certificate2.Thumbprint, expectedThumbprint, StringComparison.OrdinalIgnoreCase);
+	}
+
+	public static void Disable()
+	{
+		ServicePointManager.ServerCertificateValidationCallback = previousCallback;
+		previousCallback = null;
+		expectedThumbprint = null;
+	}
+}
+"@
+		}
+		[AdminServiceCertificateValidation]::Enable($Script:AdminServiceCertificateThumbprint)
+	}
+
+	function Disable-AdminServiceCertificatePinning {
+		if ("AdminServiceCertificateValidation" -as [type]) {
+			[AdminServiceCertificateValidation]::Disable()
+		}
 	}
 
 	function Test-AuthenticationFailure {
@@ -1227,17 +1289,24 @@ Process {
 						$RequestSucceeded = $true
 					}
 					catch [System.Security.Authentication.AuthenticationException] {
+						$LastErrorRecord = $PSItem
 						Write-CMLogEntry -Value " - The remote AdminService endpoint certificate is invalid according to the validation procedure. Error message: $($PSItem.Exception.Message)" -Severity 2
-						Write-CMLogEntry -Value " - Will attempt to set the current session to ignore self-signed certificates and retry AdminService endpoint connection" -Severity 2
-						Set-CertificateValidationCallback
-
-						try {
-							# Call AdminService endpoint to retrieve package data
-							$AdminServiceResponse = Invoke-RestMethod -Method Get -Uri $AdminServiceUri -Credential $CandidateCredential -ErrorAction Stop
-							$RequestSucceeded = $true
+						if (-not [string]::IsNullOrWhiteSpace($Script:AdminServiceCertificateThumbprint)) {
+							Write-CMLogEntry -Value " - Retrying with the configured AdminService leaf-certificate thumbprint pin" -Severity 2
+							try {
+								Enable-AdminServiceCertificatePinning
+								$AdminServiceResponse = Invoke-RestMethod -Method Get -Uri $AdminServiceUri -Credential $CandidateCredential -ErrorAction Stop
+								$RequestSucceeded = $true
+							}
+							catch [System.Exception] {
+								$LastErrorRecord = $PSItem
+							}
+							finally {
+								Disable-AdminServiceCertificatePinning
+							}
 						}
-						catch [System.Exception] {
-							$LastErrorRecord = $PSItem
+						else {
+							Write-CMLogEntry -Value " - Certificate validation failed closed. Trust the issuing CA in the deployment environment or configure MDMAdminServiceCertificateThumbprint with the exact internal AdminService leaf-certificate thumbprint" -Severity 3
 						}
 					}
 					catch {
@@ -1460,6 +1529,31 @@ Process {
 		# Handle return value from function
 		return $OSArchitecture
 	}
+
+	function Read-DriverPackageLogicFile {
+		param(
+			[parameter(Mandatory = $true)]
+			[ValidateNotNullOrEmpty()]
+			[string]$Path
+		)
+
+		$Reader = $null
+		try {
+			$Settings = New-Object System.Xml.XmlReaderSettings
+			$Settings.DtdProcessing = [System.Xml.DtdProcessing]::Prohibit
+			$Settings.XmlResolver = $null
+			$Reader = [System.Xml.XmlReader]::Create($Path, $Settings)
+			$Document = New-Object System.Xml.XmlDocument
+			$Document.XmlResolver = $null
+			$Document.Load($Reader)
+			return $Document
+		}
+		finally {
+			if ($null -ne $Reader) {
+				$Reader.Dispose()
+			}
+		}
+	}
 	
 	function Get-DriverPackages {
 		try {
@@ -1468,7 +1562,8 @@ Process {
 				"Production" {
 					if ($Script:PSCmdlet.ParameterSetName -like "XMLPackage") {
 						Write-CMLogEntry -Value " - Reading XML content logic file driver package entries" -Severity 1
-						$Packages = (([xml]$(Get-Content -Path $XMLPackageLogicFile -Raw)).ArrayOfCMPackage).CMPackage | Where-Object {
+						$PackageLogic = Read-DriverPackageLogicFile -Path $XMLPackageLogicFile
+						$Packages = $PackageLogic.ArrayOfCMPackage.CMPackage | Where-Object {
 							$_.Name -notmatch "Pilot" -and $_.Name -notmatch "Legacy" -and $_.Name -match $Filter
 						}
 					}
@@ -1483,7 +1578,8 @@ Process {
 				"Pilot" {
 					if ($Script:PSCmdlet.ParameterSetName -like "XMLPackage") {
 						Write-CMLogEntry -Value " - Reading XML content logic file driver package entries" -Severity 1
-						$Packages = (([xml]$(Get-Content -Path $XMLPackageLogicFile -Raw)).ArrayOfCMPackage).CMPackage | Where-Object {
+						$PackageLogic = Read-DriverPackageLogicFile -Path $XMLPackageLogicFile
+						$Packages = $PackageLogic.ArrayOfCMPackage.CMPackage | Where-Object {
 							$_.Name -match "Pilot" -and $_.Name -match $Filter
 						}
 					}
@@ -1563,7 +1659,7 @@ Process {
 				$ComputerDetails.SystemSKU = ((Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).SubString(0, 4)).Trim()
 			}
 			"*Panasonic*" {
-				$ComputerDetails.Manufacturer = "Panasonic Corporation"
+				$ComputerDetails.Manufacturer = "Panasonic"
 				$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
 				$ComputerDetails.SystemSKU = (Get-CIMInstance -ClassName "MS_SystemInformation" -NameSpace "root\WMI").BaseBoardProduct.Trim()
 			}
@@ -2469,8 +2565,19 @@ Process {
 			[ValidateNotNullOrEmpty()]
 			[string]$ContentLocation
 		)
+
+		if ($Script:DeploymentMode -like "PreCache") {
+			Write-CMLogEntry -Value " - Driver package content successfully downloaded and pre-cached to: $($ContentLocation)" -Severity 1
+			return
+		}
+
 		# Detect if downloaded driver package content is a compressed archive that needs to be extracted before drivers are installed
-		$DriverPackageCompressedFile = Get-ChildItem -Path $ContentLocation -Filter "DriverPackage.*"
+		$DriverPackageCompressedFiles = @(Get-ChildItem -Path $ContentLocation -Filter "DriverPackage.*")
+		if ($DriverPackageCompressedFiles.Count -gt 1) {
+			Write-CMLogEntry -Value " - Driver package content contains multiple DriverPackage.* archives; exactly one compressed archive is supported" -Severity 3
+			$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
+		}
+		$DriverPackageCompressedFile = $DriverPackageCompressedFiles | Select-Object -First 1
 		if ($DriverPackageCompressedFile -ne $null) {
 			Write-CMLogEntry -Value " - Downloaded driver package content contains a compressed archive with driver content" -Severity 1
 			
@@ -2521,6 +2628,7 @@ Process {
 					}
 				}
 				"*.wim" {
+					$WimMounted = $false
 					try {
 						# Create mount location for driver package WIM file
 						$DriverPackageMountLocation = Join-Path -Path $ContentLocation -ChildPath "Mount"
@@ -2541,16 +2649,34 @@ Process {
 						Write-CMLogEntry -Value " - Attempting to mount driver package content WIM file: $($DriverPackageCompressedFile.Name)" -Severity 1
 						Write-CMLogEntry -Value " - Mount location: $($DriverPackageMountLocation)" -Severity 1
 						Mount-WindowsImage -ImagePath $DriverPackageCompressedFile.FullName -Path $DriverPackageMountLocation -Index 1 -ReadOnly -ErrorAction Stop
+						$WimMounted = $true
 						Write-CMLogEntry -Value " - Successfully mounted driver package content WIM file" -Severity 1
 						Write-CMLogEntry -Value " - Copying items from mount directory" -Severity 1
-						Get-ChildItem -Path $DriverPackageMountLocation | Copy-Item -destination $ContentLocation -Recurse -container
+						Get-ChildItem -Path $DriverPackageMountLocation | Copy-Item -Destination $ContentLocation -Recurse -Container -Force -ErrorAction Stop
+						Write-CMLogEntry -Value " - Dismounting driver package content WIM before driver processing" -Severity 1
+						Dismount-WindowsImage -Path $DriverPackageMountLocation -Discard -ErrorAction Stop
+						$WimMounted = $false
+						Write-CMLogEntry -Value " - Successfully dismounted driver package content WIM file" -Severity 1
 					}
 					catch [System.Exception] {
-						Write-CMLogEntry -Value " - Failed to mount driver package content WIM file. Error message: $($_.Exception.Message)" -Severity 3
+						$WimErrorMessage = $_.Exception.Message
+						if ($WimMounted) {
+							try {
+								Dismount-WindowsImage -Path $DriverPackageMountLocation -Discard -ErrorAction Stop
+							}
+							catch [System.Exception] {
+								Write-CMLogEntry -Value " - Failed to dismount driver package content WIM during error cleanup. Error message: $($_.Exception.Message)" -Severity 3
+							}
+						}
+						Write-CMLogEntry -Value " - Failed to extract driver package content WIM file. Error message: $($WimErrorMessage)" -Severity 3
 						
 						# Throw terminating error						
 						$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
 					}
+				}
+				default {
+					Write-CMLogEntry -Value " - Unsupported compressed driver package format: $($DriverPackageCompressedFile.Name). Supported formats are ZIP, self-extracting EXE, and WIM" -Severity 3
+					$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
 				}
 			}
 		}
@@ -2559,6 +2685,7 @@ Process {
 			"BareMetal" {
 				# Apply drivers recursively from downloaded driver package location
 				Write-CMLogEntry -Value " - Attempting to apply drivers using dism.exe located in: $($ContentLocation)" -Severity 1
+				$DismLogPath = Join-Path -Path $LogsDirectory -ChildPath "DISM.log"
 				
 				# Determine driver injection method from parameter input
 				switch ($DriverInstallMode) {
@@ -2572,7 +2699,7 @@ Process {
 								foreach ($DriverINF in $DriverINFs) {
 									# Install specific driver
 									Write-CMLogEntry -Value " - Attempting to install driver: $($DriverINF.FullName)" -Severity 1
-									$ApplyDriverInvocation = Invoke-Executable -FilePath "dism.exe" -Arguments "/Image:$($TSEnvironment.Value('OSDTargetSystemDrive'))\ /Add-Driver /Driver:`"$($DriverINF.FullName)`""
+									$ApplyDriverInvocation = Invoke-Executable -FilePath "dism.exe" -Arguments "/Image:$($TSEnvironment.Value('OSDTargetSystemDrive'))\ /Add-Driver /Driver:`"$($DriverINF.FullName)`" /LogPath:`"$($DismLogPath)`""
 									
 									# Validate driver injection
 									if ($ApplyDriverInvocation -eq 0) {
@@ -2601,7 +2728,7 @@ Process {
 						Write-CMLogEntry -Value " - DriverInstallMode is currently set to: $($DriverInstallMode)" -Severity 1
 						
 						# Apply drivers recursively
-						$ApplyDriverInvocation = Invoke-Executable -FilePath "dism.exe" -Arguments "/Image:$($TSEnvironment.Value('OSDTargetSystemDrive'))\ /Add-Driver /Driver:$($ContentLocation) /Recurse"
+						$ApplyDriverInvocation = Invoke-Executable -FilePath "dism.exe" -Arguments "/Image:$($TSEnvironment.Value('OSDTargetSystemDrive'))\ /Add-Driver /Driver:`"$($ContentLocation)`" /Recurse /LogPath:`"$($DismLogPath)`""
 						
 						# Validate driver injection
 						if ($ApplyDriverInvocation -eq 0) {
@@ -2638,36 +2765,11 @@ Process {
 					$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
 				}
 			}
-			"PreCache" {
-				# Driver package content downloaded successfully, log output and exit script
-				Write-CMLogEntry -Value " - Driver package content successfully downloaded and pre-cached to: $($ContentLocation)" -Severity 1
-			}
-		}
-		
-		# Cleanup potential compressed driver package content
-		if ($DriverPackageCompressedFile -ne $null) {
-			switch -wildcard ($DriverPackageCompressedFile.Name) {
-				"*.wim" {
-					try {
-						# Attempt to dismount compressed driver package content WIM file
-						Write-CMLogEntry -Value " - Attempting to dismount driver package content WIM file: $($DriverPackageCompressedFile.Name)" -Severity 1
-						Write-CMLogEntry -Value " - Mount location: $($DriverPackageMountLocation)" -Severity 1
-						Dismount-WindowsImage -Path $DriverPackageMountLocation -Discard -ErrorAction Stop
-						Write-CMLogEntry -Value " - Successfully dismounted driver package content WIM file" -Severity 1
-					}
-					catch [System.Exception] {
-						Write-CMLogEntry -Value " - Failed to dismount driver package content WIM file. Error message: $($_.Exception.Message)" -Severity 3
-						
-						# Throw terminating error						
-						$PSCmdlet.ThrowTerminatingError((New-TerminatingErrorRecord))
-					}
-				}
-			}
 		}
 	}
 	
 	Write-CMLogEntry -Value "[ApplyDriverPackage]: Apply Driver Package process initiated" -Severity 1
-	Write-CMLogEntry -Value " - Script version: 4.3.4" -Severity 1
+	Write-CMLogEntry -Value " - Script version: 4.3.5" -Severity 1
 	if ($PSCmdLet.ParameterSetName -like "Debug") {
 		Write-CMLogEntry -Value " - Apply driver package process initiated in debug mode" -Severity 1
 	}

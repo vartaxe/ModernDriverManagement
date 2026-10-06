@@ -4,7 +4,7 @@ $ParseErrors = $null
 $Ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$null, [ref]$ParseErrors)
 if ($ParseErrors.Count) { throw ($ParseErrors.Message -join "; ") }
 
-foreach ($Name in @("Get-OSBuild", "Get-ComputerSystemType", "Confirm-SystemSKU", "Get-DeploymentType", "New-TerminatingErrorRecord", "Test-VirtualMachineDriverPackage")) {
+foreach ($Name in @("Get-OSBuild", "Get-ComputerSystemType", "Confirm-SystemSKU", "Get-DeploymentType", "New-TerminatingErrorRecord", "Test-VirtualMachineDriverPackage", "Read-DriverPackageLogicFile")) {
     $Node = $Ast.Find({ param($Item) $Item -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $Item.Name -eq $Name }.GetNewClosure(), $true)
     Invoke-Expression $Node.Extent.Text
 }
@@ -80,6 +80,33 @@ foreach ($Case in $Cases) {
     }
     else { Test-Platform }
 }
+
+$ComputerDataNode = $Ast.Find({ param($Item) $Item -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $Item.Name -eq "Get-ComputerData" }, $true)
+Invoke-Expression $ComputerDataNode.Extent.Text
+function Get-CimInstance { param($ClassName, $NameSpace) $Script:TestSystemInformation }
+function Get-WmiObject {
+    param($Class, $Namespace)
+    if ($Class -eq "Win32_BaseBoard") { return $Script:TestBaseBoard }
+    return $Script:TestSystem
+}
+function Test-ComputerData {
+    [CmdletBinding()]param()
+    $Script:PSCmdlet = $PSCmdlet
+    Get-ComputerData
+}
+$Script:TestSystem = [pscustomobject]@{ Model = "FZ-55"; Manufacturer = "Panasonic Corporation" }
+$Script:TestSystemInformation = [pscustomobject]@{ BaseBoardProduct = "FZ55-3" }
+$ComputerData = Test-ComputerData
+if ($ComputerData.Manufacturer -ne "Panasonic" -or $ComputerData.Model -ne "FZ-55" -or $ComputerData.SystemSKU -ne "FZ55-3") {
+    throw "Panasonic package normalization failed"
+}
+$Script:TestSystem = [pscustomobject]@{ Model = "LIFEBOOK U7412"; Manufacturer = "FUJITSU CLIENT COMPUTING LIMITED" }
+$Script:TestBaseBoard = [pscustomobject]@{ SKU = $null }
+$ComputerData = Test-ComputerData
+if ($ComputerData.Manufacturer -ne "Fujitsu" -or $ComputerData.Model -ne "LIFEBOOK U7412" -or $null -ne $ComputerData.SystemSKU) {
+    throw "Fujitsu null-SKU model fallback failed"
+}
+
 foreach ($Case in @(
     @("42", "42", $true), @("142", "42", $false), @("ModelSKU-42", "42", $false),
     @("42;43,44 45", "44", $true), @("42;43,44 45", "45", $true),
@@ -113,8 +140,34 @@ $Blocked = $false
 try { Test-Deployment } catch { if ($_.Exception.Message -ne "InnerTerminatingFailure") { throw }; $Blocked = $true }
 if (-not $Blocked) { throw "Missing XML file did not stop deployment" }
 
+$XmlPath = Join-Path $env:TEMP ("mdm-logic-" + [guid]::NewGuid().ToString() + ".xml")
+try {
+    Set-Content -LiteralPath $XmlPath -Value "<ArrayOfCMPackage><CMPackage><Name>Drivers</Name></CMPackage></ArrayOfCMPackage>" -Encoding UTF8
+    $Document = Read-DriverPackageLogicFile -Path $XmlPath
+    if ($Document.ArrayOfCMPackage.CMPackage.Name -ne "Drivers") { throw "Safe XML package parsing failed" }
+    Set-Content -LiteralPath $XmlPath -Value '<!DOCTYPE x [<!ENTITY e SYSTEM "file:///C:/Windows/win.ini">]><ArrayOfCMPackage><CMPackage><Name>&e;</Name></CMPackage></ArrayOfCMPackage>' -Encoding UTF8
+    $Blocked = $false
+    try { Read-DriverPackageLogicFile -Path $XmlPath } catch { $Blocked = $true }
+    if (-not $Blocked) { throw "XML DTD processing was not blocked" }
+}
+finally {
+    Remove-Item -LiteralPath $XmlPath -Force -ErrorAction SilentlyContinue
+}
+
 $InstallNode = $Ast.Find({ param($Item) $Item -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $Item.Name -eq "Install-DriverPackageContent" }, $true)
 $SwitchNode = $InstallNode.Find({ param($Item) $Item -is [System.Management.Automation.Language.SwitchStatementAst] -and $Item.Condition.Extent.Text -eq '$Script:DeploymentMode' }, $true)
+$DismountNodes = $InstallNode.FindAll({ param($Item) $Item -is [System.Management.Automation.Language.CommandAst] -and $Item.GetCommandName() -eq "Dismount-WindowsImage" }, $true)
+if ($DismountNodes.Count -ne 2 -or ($DismountNodes | Where-Object { $_.Extent.EndOffset -gt $SwitchNode.Extent.StartOffset })) {
+    throw "WIM content can remain mounted while driver processing starts"
+}
+if ($InstallNode.Extent.Text -notmatch '/LogPath:`"\$\(\$DismLogPath\)`"' -or
+    $InstallNode.Extent.Text -notmatch '/Driver:`"\$\(\$ContentLocation\)`" /Recurse') {
+    throw "DISM paths are not quoted or logged consistently"
+}
+Invoke-Expression $InstallNode.Extent.Text
+$Script:DeploymentMode = "PreCache"
+Install-DriverPackageContent -ContentLocation "Z:\Path-That-Must-Not-Be-Read"
+
 $UpdateClause = $SwitchNode.Clauses | Where-Object { $_.Item1.Value -eq "DriverUpdate" }
 $UpdateBlock = [scriptblock]::Create($UpdateClause.Item2.Extent.Text.TrimStart("{").TrimEnd("}"))
 function Invoke-Executable { param($FilePath, $Arguments) $Script:InstallArguments = $Arguments; $Script:InstallExitCode }
@@ -136,6 +189,54 @@ $CommandErrors = $null
 if ($CommandErrors.Count -or $Command -notlike '*exit $LASTEXITCODE*' -or -not $Command.Contains("O''Brien")) { throw "Installer command quoting or exit propagation failed" }
 foreach ($Label in @("VMware7,1", "Citrix", "XenServer", "Proxmox", "VirtIO")) {
     if (-not (Test-VirtualMachineDriverPackage -Package ([pscustomobject]@{ Name = "Drivers - $Label - Windows 11 26H2 Arm64" }))) { throw "VM package label rejected" }
+}
+$AuthNode = $Ast.Find({ param($Item) $Item -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $Item.Name -eq "Get-AuthToken" }, $true)
+Invoke-Expression $AuthNode.Extent.Text
+function Invoke-RestMethod {
+    param($Method, $Uri, $Body, $ContentType, $ErrorAction)
+    $CapturedBody = @{}
+    foreach ($Entry in $Body.GetEnumerator()) { $CapturedBody[$Entry.Key] = $Entry.Value }
+    $Script:TokenRequest = [pscustomobject]@{ Method = $Method; Uri = $Uri; Body = $CapturedBody; ContentType = $ContentType }
+    [pscustomobject]@{ token_type = "Bearer"; access_token = "test-token" }
+}
+$TenantName = "contoso.onmicrosoft.com"
+$ClientID = "00000000-0000-0000-0000-000000000001"
+$ApplicationIDURI = "https://ConfigMgrService"
+$Script:Password = "P@ssw0rd!"
+$Credential = New-Object System.Management.Automation.PSCredential("svc-mdm@contoso.com", (ConvertTo-SecureString $Script:Password -AsPlainText -Force))
+Get-AuthToken
+if ($Script:TokenRequest.Uri -ne "https://login.microsoftonline.com/contoso.onmicrosoft.com/oauth2/token" -or
+    $Script:TokenRequest.Method -ne "Post" -or
+    $Script:TokenRequest.ContentType -ne "application/x-www-form-urlencoded" -or
+    $Script:TokenRequest.Body.username -ne "svc-mdm@contoso.com" -or
+    $Script:TokenRequest.Body.password -ne "P@ssw0rd!" -or
+    $Script:AuthToken.Authorization -ne "Bearer test-token" -or
+    $null -ne $Script:Password -or
+    $null -ne $Script:Credential) {
+    throw "Direct OAuth token acquisition failed"
+}
+if ($Ast.Find({ param($Item) $Item -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $Item.Name -eq "Install-AuthModule" }, $true)) {
+    throw "Runtime authentication module installation is still present"
+}
+$EnablePinningNode = $Ast.Find({ param($Item) $Item -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $Item.Name -eq "Enable-AdminServiceCertificatePinning" }, $true)
+$DisablePinningNode = $Ast.Find({ param($Item) $Item -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $Item.Name -eq "Disable-AdminServiceCertificatePinning" }, $true)
+Invoke-Expression $EnablePinningNode.Extent.Text
+Invoke-Expression $DisablePinningNode.Extent.Text
+$PreviousCertificateCallback = [Net.ServicePointManager]::ServerCertificateValidationCallback
+$Script:AdminServiceCertificateThumbprint = "A" * 40
+try {
+    Enable-AdminServiceCertificatePinning
+    if ($null -eq [Net.ServicePointManager]::ServerCertificateValidationCallback) { throw "Certificate pinning callback was not enabled" }
+}
+finally {
+    Disable-AdminServiceCertificatePinning
+}
+if (-not [object]::ReferenceEquals($PreviousCertificateCallback, [Net.ServicePointManager]::ServerCertificateValidationCallback)) {
+    throw "Certificate validation callback was not restored"
+}
+$ScriptText = [IO.File]::ReadAllText($ScriptPath)
+if ($ScriptText -match "(?i)\b(Install|Update)-Module\b" -or $ScriptText -match "ServerCertificateValidationCallbackEncoded") {
+    throw "Unsafe runtime module installation or unconditional certificate bypass remains"
 }
 $FallbackNode = $Ast.Find({ param($Item) $Item -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $Item.Name -eq "Confirm-FallbackDriverPackage" }, $true)
 if ($null -eq $FallbackNode) { throw "Fallback function not found" }
