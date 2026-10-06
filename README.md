@@ -104,6 +104,11 @@ in their name, description, or manufacturer. Detection of another numbered VMwar
 model does not make packages for `VMware7,1` interchangeable with it. DebugMode
 permits detection on virtual machines without downloading or installing drivers.
 
+Use separately approved profiles or sources for OEM model packages, component
+supplements, WinPE drivers, and offline or recovery content. Administrators must
+validate and import third-party content through a controlled content-management
+process; this script does not discover or trust external sources automatically.
+
 XML deployments accept `OSUpgrade`; the existing `OSUpdate` value is an alias that
 also stages content for Windows Setup. Missing XML package files stop execution.
 SystemSKU lists support comma, semicolon, and whitespace separators and match
