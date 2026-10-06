@@ -65,6 +65,8 @@ Microsoft manufacturer and a model containing `Surface`. Unlisted brands are log
 as `Physical-Unknown` and still use the existing manufacturer/model package matching.
 OEM labels are informational: they do not replace manufacturer normalization, SKU
 detection, or package validation, and do not trigger vendor tools or MSI installers.
+Panasonic systems are normalized to `Panasonic` to match packages created by Driver
+Automation Tool.
 
 ## Virtual-machine servicing boundaries
 
@@ -101,3 +103,31 @@ fallback packages as well as regular packages. DriverUpdate logs PnPUtil output
 to `Install-Drivers.txt`, accepts 0 and the standard Windows reboot-required code
 3010, and stops on other failures instead of reporting success. Microsoft documents
 the PnPUtil command syntax but does not publish a PnPUtil-specific exit-code table.
+PreCache downloads compressed content without expanding it. WIM packages are
+dismounted immediately after extraction so recursive DISM processing sees one copy
+of each driver, and bare-metal DISM output is retained as `DISM.log` with the task
+sequence logs. Packages containing multiple `DriverPackage.*` archives or an
+unsupported archive type fail closed. XML package logic is parsed with DTD processing
+and external entity resolution disabled.
+
+## AdminService authentication security
+
+The script does not install or update PowerShell Gallery modules during deployment.
+External AdminService/CMG authentication uses the existing `MDMTenantName`,
+`MDMClientID`, `MDMApplicationIDURI`, `MDMUserName`, and `MDMPassword` values to
+request an OAuth token directly from the Microsoft identity platform. This
+non-interactive resource-owner-password flow requires an account and tenant policy
+that permit it; accounts requiring MFA or passwordless authentication are not
+compatible with that legacy flow. Microsoft recommends migrating unattended
+workloads to a service principal with a certificate credential where the target
+API supports app-only access; review the current
+[ROPC limitations and migration guidance](https://learn.microsoft.com/entra/identity-platform/v2-oauth-ropc).
+
+Internal AdminService TLS validation fails closed. The preferred configuration is
+to trust the certificate's issuing CA in the full operating system and WinPE boot
+image. When an internal AdminService intentionally uses a self-signed certificate,
+set `MDMAdminServiceCertificateThumbprint` to the exact 40-character SHA-1
+thumbprint of the leaf certificate, or pass
+`-AdminServiceCertificateThumbprint`. The pin permits only chain-trust errors for
+that certificate, never hostname mismatches, and is removed immediately after the
+retry. Do not use a thumbprint copied from an untrusted connection.
