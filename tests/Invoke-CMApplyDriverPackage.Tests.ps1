@@ -51,6 +51,8 @@ $Cases = @(
     @("VMware7,1", "VMware, Inc.", "Hypervisor-VMware"),
     @("VMware 22,1", "VMware, Inc.", "Hypervisor-VMware"),
     @("Virtual Machine", "Microsoft Corporation", "Hypervisor-HyperV"),
+    @("Parallels Virtual Platform", "Parallels Software International Inc.", "Hypervisor-Parallels"),
+    @("AHV Virtual Machine", "Nutanix", "Hypervisor-NutanixAHV"),
     @("VirtualBox", "Oracle Corporation", "Hypervisor-VirtualBox"),
     @("Standard PC (Q35 + ICH9, 2009)", "QEMU", "Hypervisor-QEMUKVM"),
     @("KVM Virtual Machine", "Red Hat", "Hypervisor-QEMUKVM"),
@@ -105,6 +107,16 @@ $Script:TestBaseBoard = [pscustomobject]@{ SKU = $null }
 $ComputerData = Test-ComputerData
 if ($ComputerData.Manufacturer -ne "Fujitsu" -or $ComputerData.Model -ne "LIFEBOOK U7412" -or $null -ne $ComputerData.SystemSKU) {
     throw "Fujitsu null-SKU model fallback failed"
+}
+$Script:TestSystem = [pscustomobject]@{ Model = "AHV Virtual Machine"; Manufacturer = "" }
+$Script:TestSystemInformation = [pscustomobject]@{
+    SystemManufacturer = "Nutanix"
+    SystemProductName = "AHV Virtual Machine"
+    SystemSKU = "AHV-SKU"
+}
+$ComputerData = Test-ComputerData
+if ($ComputerData.Manufacturer -ne "Nutanix" -or $ComputerData.Model -ne "AHV Virtual Machine" -or $ComputerData.SystemSKU -ne "AHV-SKU") {
+    throw "Nutanix MS_SystemInformation fallback failed"
 }
 
 foreach ($Case in @(
@@ -187,7 +199,7 @@ $Command = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(($Scri
 $CommandErrors = $null
 [System.Management.Automation.Language.Parser]::ParseInput($Command, [ref]$null, [ref]$CommandErrors) | Out-Null
 if ($CommandErrors.Count -or $Command -notlike '*exit $LASTEXITCODE*' -or -not $Command.Contains("O''Brien")) { throw "Installer command quoting or exit propagation failed" }
-foreach ($Label in @("VMware7,1", "Citrix", "XenServer", "Proxmox", "VirtIO")) {
+foreach ($Label in @("VMware7,1", "Citrix", "XenServer", "Proxmox", "VirtIO", "Parallels", "Nutanix", "AHV")) {
     if (-not (Test-VirtualMachineDriverPackage -Package ([pscustomobject]@{ Name = "Drivers - $Label - Windows 11 26H2 Arm64" }))) { throw "VM package label rejected" }
 }
 $AuthNode = $Ast.Find({ param($Item) $Item -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $Item.Name -eq "Get-AuthToken" }, $true)
