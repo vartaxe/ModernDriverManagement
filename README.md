@@ -35,6 +35,13 @@ Hyper-V detection requires the exact model `Virtual Machine` together with a
 manufacturer containing `Microsoft`. These fields do not infer VM firmware or
 generation. The generic model alone is not treated as Hyper-V.
 
+Parallels is recognized when either the model or manufacturer contains `Parallels`.
+Nutanix AHV is recognized when either field contains `Nutanix`; if
+`Win32_ComputerSystem` exposes a blank manufacturer, the script checks
+`MS_SystemInformation.SystemManufacturer`. Nutanix package matching uses the
+reported `SystemProductName` and `SystemSKU` when available and never substitutes
+a hard-coded AHV version.
+
 VirtualBox is recognized by the exact model `VirtualBox`, including guests reporting
 `innotek GmbH` or `Oracle Corporation` as manufacturer. QEMU/KVM detection recognizes
 models containing `KVM`, or a manufacturer containing `QEMU`. A `Standard PC` model
@@ -44,7 +51,7 @@ rather than treating every Red Hat system as a VM. Xen/Citrix detection recogniz
 `HVM domU` and models or manufacturers containing `Xen` or `Citrix` before the
 QEMU/KVM and physical OEM checks. The `Hypervisor-XenCitrix` label identifies the
 family, not a specific host product. Virtual package labels include `Citrix`,
-`Xen`, `XenServer`, and `XenEnterprise`.
+`Xen`, `XenServer`, `XenEnterprise`, `Parallels`, `Nutanix`, and `AHV`.
 The platform, manufacturer, and model are logged.
 
 Platform detection is a best-effort SMBIOS heuristic. Hypervisors can override the
@@ -55,8 +62,9 @@ new environments before deployment.
 
 QEMU/KVM identification does not distinguish Proxmox from other QEMU/KVM hosts or
 infer firmware/chipset from a model string. The script deploys matching INF driver
-packages; it does not automatically run VMware Tools, VirtualBox Guest Additions,
-or other guest-tools installers based solely on platform detection.
+packages; it does not automatically run VMware Tools, Parallels Tools, Nutanix
+Guest Tools, VirtualBox Guest Additions, or other guest-tools installers based
+solely on platform detection.
 
 Physical OEM classification runs only after hypervisor detection. Logged labels
 cover Dell, Alienware, HP/Hewlett-Packard, Lenovo, Fujitsu, Panasonic, ASUS/ASUSTeK,
@@ -74,8 +82,9 @@ Automation Tool.
 packages to pass the normal package-selection and INF deployment workflow. This
 supports packages such as extracted VirtIO, VMXNET, PVSCSI, and Xen drivers. It
 does not install or update VMware Tools, VirtualBox Guest Additions, Citrix VM
-Tools, Parallels Tools, or other integration-suite installers. Hyper-V integration
-components for supported Windows guests are serviced by Windows.
+Tools, Parallels Tools, Nutanix Guest Tools, or other integration-suite
+installers. Hyper-V integration components for supported Windows guests are
+serviced by Windows.
 
 Secure Boot certificate rotation is also outside this script's scope. The 2026
 Microsoft Secure Boot certificate transition changes UEFI PK, KEK, DB, and boot

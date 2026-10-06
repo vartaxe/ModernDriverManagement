@@ -254,6 +254,10 @@
 						 - Replaced unconditional certificate validation bypass with explicit leaf-certificate thumbprint pinning.
 						 - Normalized Panasonic package matching to the manufacturer value emitted by Driver Automation Tool.
 						 - PreCache now leaves compressed content intact; WIM content is dismounted before recursive processing and DISM logs are retained with task-sequence logs.
+	4.3.6 - (2026-10-06) - Extended opt-in virtual-machine support:
+						 - Added Parallels and Nutanix AHV platform detection without changing the default VM execution block.
+						 - Nutanix detection falls back to MS_SystemInformation when Win32_ComputerSystem exposes a blank manufacturer.
+						 - Added Nutanix/AHV package labels to the virtual-hardware package allowlist.
 #>
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingPlainTextForPassword", "", Justification = "Configuration Manager exposes task-sequence variables as strings; the value is converted immediately for Windows authentication and cleared after external token acquisition.")]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingConvertToSecureStringWithPlainText", "", Justification = "Configuration Manager exposes task-sequence variables as strings; conversion to PSCredential is required for Invoke-RestMethod on Windows PowerShell 5.1.")]
@@ -382,7 +386,7 @@ param(
 	
 	[parameter(Mandatory = $false, ParameterSetName = "Debug", HelpMessage = "Override the automatically detected computer manufacturer when running in debug mode.")]
 	[ValidateNotNullOrEmpty()]
-	[ValidateSet("HP", "Hewlett-Packard", "Dell", "Lenovo", "Microsoft", "Fujitsu", "Panasonic", "Viglen", "AZW", "Getac", "Intel", "ByteSpeed", "ASUS")]
+	[ValidateSet("HP", "Hewlett-Packard", "Dell", "Lenovo", "Microsoft", "Fujitsu", "Panasonic", "Viglen", "AZW", "Getac", "Intel", "ByteSpeed", "ASUS", "Parallels", "Nutanix")]
 	[string]$Manufacturer,
 	
 	[parameter(Mandatory = $false, ParameterSetName = "Debug", HelpMessage = "Override the automatically detected computer model when running in debug mode.")]
@@ -415,7 +419,7 @@ Begin {
 	[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 	$Script:IsVirtualMachine = $false
 	$Script:ComputerPlatform = "Physical-Unknown"
-	$Script:VirtualMachinePackagePattern = "\b(virtual machine|vmware(?:\s*\d+,\d+)?|vmxnet|pvscsi|hyper[- ]?v|parallels|virtualbox|virtio|qemu|proxmox|kvm|xen(?:server|enterprise)?|citrix)\b"
+	$Script:VirtualMachinePackagePattern = "\b(virtual machine|vmware(?:\s*\d+,\d+)?|vmxnet|pvscsi|hyper[- ]?v|parallels|virtualbox|virtio|qemu|proxmox|kvm|nutanix|ahv|xen(?:server|enterprise)?|citrix)\b"
 }
 Process {
 	# Set Log Path
@@ -1622,7 +1626,15 @@ public static class AdminServiceCertificateValidation
 		}
 		
 		# Gather computer details based upon specific computer manufacturer
-		$ComputerManufacturer = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Manufacturer).Trim()
+		$ComputerManufacturer = ([string](Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Manufacturer)).Trim()
+		if ([string]::IsNullOrWhiteSpace($ComputerManufacturer)) {
+			try {
+				$ComputerManufacturer = ([string](Get-CIMInstance -ClassName "MS_SystemInformation" -NameSpace "root\WMI").SystemManufacturer).Trim()
+			}
+			catch [System.Exception] {
+				Write-CMLogEntry -Value " - Win32_ComputerSystem returned a blank manufacturer and MS_SystemInformation fallback failed. Error message: $($_.Exception.Message)" -Severity 2
+			}
+		}
 		
 		# Wrapped in try/catch so a failure in any manufacturer-specific WMI/parse step (e.g. a null
 		# BaseBoardProduct, a short Lenovo Model for SubString, or a Dell OEMString without a bracketed
@@ -1701,6 +1713,19 @@ public static class AdminServiceCertificateValidation
 					$ComputerDetails.Manufacturer = "ByteSpeed"
 					$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
 				}
+			}
+			"*Parallels*" {
+				$ComputerDetails.Manufacturer = "Parallels"
+				$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
+			}
+			"*Nutanix*" {
+				$SystemInformation = Get-CIMInstance -ClassName "MS_SystemInformation" -NameSpace "root\WMI"
+				$ComputerDetails.Manufacturer = "Nutanix"
+				$ComputerDetails.Model = ([string]$SystemInformation.SystemProductName).Trim()
+				if ([string]::IsNullOrWhiteSpace($ComputerDetails.Model)) {
+					$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
+				}
+				$ComputerDetails.SystemSKU = ([string]$SystemInformation.SystemSKU).Trim()
 			}
 			Default {
 				# =============================================================================
@@ -1807,11 +1832,25 @@ public static class AdminServiceCertificateValidation
 		$ComputerSystem = Get-WmiObject -Class "Win32_ComputerSystem"
 		$ComputerSystemType = ([string]$ComputerSystem.Model).Trim()
 		$ComputerSystemManufacturer = ([string]$ComputerSystem.Manufacturer).Trim()
+		if ([string]::IsNullOrWhiteSpace($ComputerSystemManufacturer)) {
+			try {
+				$ComputerSystemManufacturer = ([string](Get-CIMInstance -ClassName "MS_SystemInformation" -NameSpace "root\WMI").SystemManufacturer).Trim()
+			}
+			catch [System.Exception] {
+				Write-CMLogEntry -Value " - Unable to resolve a blank computer manufacturer from MS_SystemInformation. Error message: $($_.Exception.Message)" -Severity 2
+			}
+		}
 		if ($ComputerSystemType -like "VMware*") {
 			$Script:ComputerPlatform = "Hypervisor-VMware"
 		}
 		elseif (($ComputerSystemType -eq "Virtual Machine") -and ($ComputerSystemManufacturer -like "*Microsoft*")) {
 			$Script:ComputerPlatform = "Hypervisor-HyperV"
+		}
+		elseif (($ComputerSystemType -like "*Parallels*") -or ($ComputerSystemManufacturer -like "*Parallels*")) {
+			$Script:ComputerPlatform = "Hypervisor-Parallels"
+		}
+		elseif (($ComputerSystemType -like "*Nutanix*") -or ($ComputerSystemManufacturer -like "*Nutanix*")) {
+			$Script:ComputerPlatform = "Hypervisor-NutanixAHV"
 		}
 		elseif ($ComputerSystemType -eq "VirtualBox") {
 			$Script:ComputerPlatform = "Hypervisor-VirtualBox"
@@ -2769,7 +2808,7 @@ public static class AdminServiceCertificateValidation
 	}
 	
 	Write-CMLogEntry -Value "[ApplyDriverPackage]: Apply Driver Package process initiated" -Severity 1
-	Write-CMLogEntry -Value " - Script version: 4.3.5" -Severity 1
+	Write-CMLogEntry -Value " - Script version: 4.3.6" -Severity 1
 	if ($PSCmdLet.ParameterSetName -like "Debug") {
 		Write-CMLogEntry -Value " - Apply driver package process initiated in debug mode" -Severity 1
 	}
