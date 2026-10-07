@@ -258,6 +258,10 @@
 						 - Added Parallels and Nutanix AHV platform detection without changing the default VM execution block.
 						 - Nutanix detection falls back to MS_SystemInformation when Win32_ComputerSystem exposes a blank manufacturer.
 						 - Added Nutanix/AHV package labels to the virtual-hardware package allowlist.
+	4.3.7 - (2026-10-07) - Added conservative manual package matching for additional physical OEMs:
+						 - Normalized MSI and Micro-Star manufacturer strings to MSI, GIGABYTE manufacturer strings to GIGABYTE, and Dynabook/Toshiba strings to Dynabook.
+						 - Added informational OEM-MSI, OEM-GIGABYTE, and OEM-Dynabook platform labels.
+						 - Matching uses the exact Win32_ComputerSystem model and administrator-created package metadata only. No vendor catalog scraping, consumer update utility, undocumented command-line switch, or firmware flashing behavior was added.
 #>
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingPlainTextForPassword", "", Justification = "Configuration Manager exposes task-sequence variables as strings; the value is converted immediately for Windows authentication and cleared after external token acquisition.")]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingConvertToSecureStringWithPlainText", "", Justification = "Configuration Manager exposes task-sequence variables as strings; conversion to PSCredential is required for Invoke-RestMethod on Windows PowerShell 5.1.")]
@@ -386,7 +390,7 @@ param(
 	
 	[parameter(Mandatory = $false, ParameterSetName = "Debug", HelpMessage = "Override the automatically detected computer manufacturer when running in debug mode.")]
 	[ValidateNotNullOrEmpty()]
-	[ValidateSet("HP", "Hewlett-Packard", "Dell", "Lenovo", "Microsoft", "Fujitsu", "Panasonic", "Viglen", "AZW", "Getac", "Intel", "ByteSpeed", "ASUS", "Parallels", "Nutanix")]
+	[ValidateSet("HP", "Hewlett-Packard", "Dell", "Lenovo", "Microsoft", "Fujitsu", "Panasonic", "Viglen", "AZW", "Getac", "Intel", "ByteSpeed", "ASUS", "MSI", "GIGABYTE", "Dynabook", "Toshiba", "Parallels", "Nutanix")]
 	[string]$Manufacturer,
 	
 	[parameter(Mandatory = $false, ParameterSetName = "Debug", HelpMessage = "Override the automatically detected computer model when running in debug mode.")]
@@ -1699,6 +1703,26 @@ public static class AdminServiceCertificateValidation
 				$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
 				$ComputerDetails.SystemSKU = (Get-CIMInstance -ClassName "MS_SystemInformation" -NameSpace root\WMI).BaseBoardProduct.Trim()
 			}
+			"*Micro-Star*" {
+				$ComputerDetails.Manufacturer = "MSI"
+				$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
+			}
+			"*MSI*" {
+				$ComputerDetails.Manufacturer = "MSI"
+				$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
+			}
+			"*Gigabyte*" {
+				$ComputerDetails.Manufacturer = "GIGABYTE"
+				$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
+			}
+			"*Dynabook*" {
+				$ComputerDetails.Manufacturer = "Dynabook"
+				$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
+			}
+			"*Toshiba*" {
+				$ComputerDetails.Manufacturer = "Dynabook"
+				$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
+			}
 			"*Intel*" {
 				$ComputerDetails.Manufacturer = "Intel"
 				$ComputerDetails.Model = (Get-WmiObject -Class "Win32_ComputerSystem" | Select-Object -ExpandProperty Model).Trim()
@@ -1902,6 +1926,11 @@ public static class AdminServiceCertificateValidation
 					break
 				}
 				"*Getac*" { $Script:ComputerPlatform = "OEM-Getac"; break }
+				"*Micro-Star*" { $Script:ComputerPlatform = "OEM-MSI"; break }
+				"*MSI*" { $Script:ComputerPlatform = "OEM-MSI"; break }
+				"*Gigabyte*" { $Script:ComputerPlatform = "OEM-GIGABYTE"; break }
+				"*Dynabook*" { $Script:ComputerPlatform = "OEM-Dynabook"; break }
+				"*Toshiba*" { $Script:ComputerPlatform = "OEM-Dynabook"; break }
 			}
 		}
 		$Script:IsVirtualMachine = $Script:ComputerPlatform -like "Hypervisor-*"

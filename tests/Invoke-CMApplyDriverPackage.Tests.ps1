@@ -62,6 +62,11 @@ $Cases = @(
     @("Surface Pro", "Microsoft Corporation", "OEM-Surface"),
     @("Latitude", "Dell", "OEM-Dell"),
     @("B360", "Getac Technology Corporation", "OEM-Getac"),
+    @("Prestige 16 AI Studio", "Micro-Star International Co., Ltd.", "OEM-MSI"),
+    @("PRO DP21 14M", "MSI", "OEM-MSI"),
+    @("G5 KF5", "GIGABYTE TECHNOLOGY CO., LTD.", "OEM-GIGABYTE"),
+    @("PORTEGE X40-K", "Dynabook Inc.", "OEM-Dynabook"),
+    @("TECRA A50", "TOSHIBA", "OEM-Dynabook"),
     @("Alienware m18", "Dell Inc.", "OEM-Alienware"),
     @("EliteBook", "Hewlett-Packard", "OEM-HP"),
     @("ExpertBook", "ASUSTeK COMPUTER INC.", "OEM-ASUS"),
@@ -108,6 +113,20 @@ $Script:TestSystemInformation = [pscustomobject]@{ BaseBoardProduct = "B360G3" }
 $ComputerData = Test-ComputerData
 if ($ComputerData.Manufacturer -ne "Getac" -or $ComputerData.Model -ne "B360" -or $ComputerData.SystemSKU -ne "B360G3") {
     throw "Getac package normalization failed"
+}
+foreach ($Case in @(
+    @("Prestige 16 AI Studio", "Micro-Star International Co., Ltd.", "MSI"),
+    @("PRO DP21 14M", "MSI", "MSI"),
+    @("G5 KF5", "GIGABYTE TECHNOLOGY CO., LTD.", "GIGABYTE"),
+    @("PORTEGE X40-K", "Dynabook Inc.", "Dynabook"),
+    @("TECRA A50", "TOSHIBA", "Dynabook")
+)) {
+    $Script:TestSystem = [pscustomobject]@{ Model = $Case[0]; Manufacturer = $Case[1] }
+    $Script:TestSystemInformation = [pscustomobject]@{}
+    $ComputerData = Test-ComputerData
+    if ($ComputerData.Manufacturer -ne $Case[2] -or $ComputerData.Model -ne $Case[0] -or $null -ne $ComputerData.SystemSKU) {
+        throw "Manual OEM package normalization failed: $($Case -join ', ')"
+    }
 }
 $Script:TestSystem = [pscustomobject]@{ Model = "LIFEBOOK U7412"; Manufacturer = "FUJITSU CLIENT COMPUTING LIMITED" }
 $Script:TestBaseBoard = [pscustomobject]@{ SKU = $null }

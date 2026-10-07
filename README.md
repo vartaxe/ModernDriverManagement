@@ -12,12 +12,29 @@ For implementation instructions, please go to https://www.msendpointmgr.com/mode
 This is a Configuration Manager/task-sequence apply engine, not an Intune or
 OEM vendor-catalog downloader. OEM and platform recognition is separate from
 catalog acquisition: the script classifies Dell/Alienware, HP, Lenovo,
-Microsoft Surface, Acer, ASUS, Fujitsu, Panasonic, Intel/NUC, Getac, and known
-hypervisors. Unlisted physical OEMs use best-effort manufacturer/model matching.
+Microsoft Surface, Acer, ASUS, Fujitsu, Panasonic, Intel/NUC, Getac,
+MSI/Micro-Star, GIGABYTE, Dynabook/Toshiba, and known hypervisors. Unlisted
+physical OEMs use best-effort manufacturer/model matching.
 Successful deployment still requires administrators to create or import packages
 with matching metadata; the script does not acquire vendor catalogs for you. For
 Getac, source and validate the applicable driver pack through Getac's published
 support channels before creating or importing the matching package.
+
+MSI/Micro-Star systems are normalized to package manufacturer `MSI`, GIGABYTE
+systems to `GIGABYTE`, and Dynabook or Toshiba systems to `Dynabook`. These
+additional OEMs intentionally use exact `Win32_ComputerSystem.Model` matching
+without an assumed SystemSKU source. Create or import packages with that normalized
+manufacturer and the model reported by the target hardware, then validate them in
+`-DebugMode` before deployment. Dynabook's official Laptop Builder can produce PnP
+driver packs suitable for direct Configuration Manager import:
+https://support.dynabook.com/support/navShell?cf=laptop-builder
+
+This recognition does not scrape vendor download sites, discover MSI or GIGABYTE
+catalogs, run MSI Center, GIGABYTE Control Center, `@BIOS`, or M-FLASH, guess
+installer switches, or perform firmware updates. Package content and any
+vendor-specific installation command remain separately governed; no vendor
+installer command is supplied or executed by this change. This script's supported
+driver path applies validated INF content with Windows tooling.
 
 ## Windows ADK and WinPE compatibility
 
@@ -88,9 +105,10 @@ solely on platform detection.
 
 Physical OEM classification runs only after hypervisor detection. Logged labels
 cover Dell, Alienware, HP/Hewlett-Packard, Lenovo, Fujitsu, Panasonic, ASUS/ASUSTeK,
-Acer, Intel (including NUC models), and Microsoft Surface. Surface requires both a
-Microsoft manufacturer and a model containing `Surface`. Unlisted brands are logged
-as `Physical-Unknown` and still use the existing manufacturer/model package matching.
+Acer, Intel (including NUC models), Microsoft Surface, MSI/Micro-Star, GIGABYTE,
+and Dynabook/Toshiba. Surface requires both a Microsoft manufacturer and a model
+containing `Surface`. Unlisted brands are logged as `Physical-Unknown` and still use
+the existing manufacturer/model package matching.
 OEM labels are informational: they do not replace manufacturer normalization, SKU
 detection, or package validation, and do not trigger vendor tools or MSI installers.
 Panasonic systems are normalized to `Panasonic` to match packages created by Driver
