@@ -1,4 +1,9 @@
-# Modern Driver Management
+# Modern Driver Management (maintained fork)
+
+This repository is a maintained fork of
+[MSEndpointMgr/ModernDriverManagement](https://github.com/MSEndpointMgr/ModernDriverManagement),
+preserving the upstream MIT license and attribution. It contains community
+maintenance updates while remaining compatible with the upstream project.
 
 For implementation instructions, please go to https://www.msendpointmgr.com/modern-driver-management
 
