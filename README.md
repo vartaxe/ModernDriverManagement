@@ -24,7 +24,8 @@ support channels before creating or importing the matching package.
 Recognizing a Windows release in this script does not certify every Configuration
 Manager, Windows ADK, or WinPE combination for that release. For Windows 11 26H2,
 Microsoft's current ADK documentation lists the serviced `10.1.26100.9457` kit,
-and Configuration Manager supports the `10.1.26100.x` ADK family. Microsoft lists
+and Configuration Manager supports the `10.1.26100.x` ADK family. Configuration
+Manager 2509 does not support Windows 11 26H2 clients; use 2603 or later. Microsoft lists
 ADK `10.1.28000.1` specifically for Windows 11 26H1 Arm64, but currently marks it
 unsupported with Configuration Manager 2509, 2603, and 2609. Check the current
 [Windows ADK download guidance](https://learn.microsoft.com/windows-hardware/get-started/adk-install)
@@ -39,6 +40,8 @@ The WinPE boot image must include the optional components required by this scrip
 including WinPE-WMI and WinPE-PowerShell with their dependencies. Configuration
 Manager 2403 or later and ADK `10.1.26100.x` or later are required for supported
 Arm64 operating-system deployment. Modern ADKs do not include an x86 WinPE image.
+Windows 11 26H1 is a specialized new-hardware release, not a general in-place-upgrade
+target for existing Windows 11 devices.
 
 ## Virtual machines
 

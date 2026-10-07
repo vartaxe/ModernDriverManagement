@@ -257,6 +257,9 @@ $ScriptText = [IO.File]::ReadAllText($ScriptPath)
 if ($ScriptText -match "(?i)\b(Install|Update)-Module\b" -or $ScriptText -match "ServerCertificateValidationCallbackEncoded") {
     throw "Unsafe runtime module installation or unconditional certificate bypass remains"
 }
+if (-not $ScriptText.Contains('throw "Unable to construct Microsoft.SMS.TSEnvironment object.')) {
+    throw "Task-sequence environment initialization does not fail closed"
+}
 $FallbackNode = $Ast.Find({ param($Item) $Item -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $Item.Name -eq "Confirm-FallbackDriverPackage" }, $true)
 if ($null -eq $FallbackNode) { throw "Fallback function not found" }
 $PatternNode = $FallbackNode.Find({ param($Item) $Item -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $Item.Value -like "*Architecture*" -and $Item.Value -like "*x86*" }, $true)

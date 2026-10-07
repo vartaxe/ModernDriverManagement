@@ -411,7 +411,7 @@ Begin {
 			$TSEnvironment = New-Object -ComObject "Microsoft.SMS.TSEnvironment" -ErrorAction Stop
 		}
 		catch [System.Exception] {
-			Write-Warning -Message "Unable to construct Microsoft.SMS.TSEnvironment object"; exit
+			throw "Unable to construct Microsoft.SMS.TSEnvironment object. $($PSItem.Exception.Message)"
 		}
 	}
 	
