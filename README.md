@@ -157,6 +157,13 @@ workloads to a service principal with a certificate credential where the target
 API supports app-only access; review the current
 [ROPC limitations and migration guidance](https://learn.microsoft.com/entra/identity-platform/v2-oauth-ropc).
 
+For internal AdminService authentication, the configured user name is attempted
+first. If it receives `401 Unauthorized`, the script can retry inferred UPN and
+down-level domain-qualified forms. This is compatibility handling for environments
+that reject a bare account name, not a Microsoft-documented ConfigMgr 2603
+UPN-only requirement. Prefer an explicit UPN to avoid ambiguous domain inference,
+and validate the account format and policy in your own site.
+
 Internal AdminService TLS validation fails closed. The preferred configuration is
 to trust the certificate's issuing CA in the full operating system and WinPE boot
 image. When an internal AdminService intentionally uses a self-signed certificate,
