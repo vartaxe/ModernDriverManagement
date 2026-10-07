@@ -61,6 +61,7 @@ $Cases = @(
     @("HVM domU", "Citrix", "Hypervisor-XenCitrix"),
     @("Surface Pro", "Microsoft Corporation", "OEM-Surface"),
     @("Latitude", "Dell", "OEM-Dell"),
+    @("B360", "Getac Technology Corporation", "OEM-Getac"),
     @("Alienware m18", "Dell Inc.", "OEM-Alienware"),
     @("EliteBook", "Hewlett-Packard", "OEM-HP"),
     @("ExpertBook", "ASUSTeK COMPUTER INC.", "OEM-ASUS"),
@@ -101,6 +102,12 @@ $Script:TestSystemInformation = [pscustomobject]@{ BaseBoardProduct = "FZ55-3" }
 $ComputerData = Test-ComputerData
 if ($ComputerData.Manufacturer -ne "Panasonic" -or $ComputerData.Model -ne "FZ-55" -or $ComputerData.SystemSKU -ne "FZ55-3") {
     throw "Panasonic package normalization failed"
+}
+$Script:TestSystem = [pscustomobject]@{ Model = "B360"; Manufacturer = "Getac Technology Corporation" }
+$Script:TestSystemInformation = [pscustomobject]@{ BaseBoardProduct = "B360G3" }
+$ComputerData = Test-ComputerData
+if ($ComputerData.Manufacturer -ne "Getac" -or $ComputerData.Model -ne "B360" -or $ComputerData.SystemSKU -ne "B360G3") {
+    throw "Getac package normalization failed"
 }
 $Script:TestSystem = [pscustomobject]@{ Model = "LIFEBOOK U7412"; Manufacturer = "FUJITSU CLIENT COMPUTING LIMITED" }
 $Script:TestBaseBoard = [pscustomobject]@{ SKU = $null }
