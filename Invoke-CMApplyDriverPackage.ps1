@@ -1903,6 +1903,7 @@ public static class AdminServiceCertificateValidation
 					}
 					break
 				}
+				"*Getac*" { $Script:ComputerPlatform = "OEM-Getac"; break }
 			}
 		}
 		$Script:IsVirtualMachine = $Script:ComputerPlatform -like "Hypervisor-*"
