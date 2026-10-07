@@ -7,6 +7,16 @@ maintenance updates while remaining compatible with the upstream project.
 
 For implementation instructions, please go to https://www.msendpointmgr.com/modern-driver-management
 
+## Driver package scope
+
+This is a Configuration Manager/task-sequence apply engine, not an Intune or
+OEM vendor-catalog downloader. OEM and platform recognition is separate from
+catalog acquisition: the script classifies Dell/Alienware, HP, Lenovo,
+Microsoft Surface, Acer, ASUS, Fujitsu, Panasonic, Intel/NUC, and known
+hypervisors. Unlisted physical OEMs use best-effort manufacturer/model matching.
+Successful deployment still requires administrators to create or import packages
+with matching metadata; the script does not acquire vendor catalogs for you.
+
 ## Windows ADK and WinPE compatibility
 
 Recognizing a Windows release in this script does not certify every Configuration
